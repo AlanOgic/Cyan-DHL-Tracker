@@ -1,4 +1,4 @@
-# DHL ShipTracker
+# Cyan-DHL-Tracker
 
 A command-line interface tool to track DHL shipments with data from Odoo.
 
@@ -15,8 +15,8 @@ A command-line interface tool to track DHL shipments with data from Odoo.
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/dhl-track.git
-   cd dhl-track
+   git clone https://github.com/AlanOgic/Cyan-DHL-Tracker.git
+   cd Cyan-DHL-Tracker
    ```
 
 2. Create a virtual environment and install dependencies:
