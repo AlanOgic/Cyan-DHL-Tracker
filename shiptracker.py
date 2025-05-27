@@ -102,7 +102,7 @@ class OdooClient:
         - partner_name: The name of the partner
         """
         try:
-            # Fetch recent shipments with tracking numbers
+            # Fetch recent shipments with tracking numbers, excluding already delivered ones
             shipments = self.models.execute_kw(
                 self.db, self.uid, self.password,
                 'stock.picking', 'search_read',
@@ -110,7 +110,8 @@ class OdooClient:
                     [
                         ('carrier_tracking_ref', '!=', False),
                         ('carrier_id.name', 'ilike', 'DHL'),
-                        ('state', '=', 'done')
+                        ('state', '=', 'done'),
+                        ('x_studio_delivered_', '!=', 'YES')
                     ]
                 ],
                 {
@@ -138,6 +139,76 @@ class OdooClient:
         except Exception as e:
             print(f"[-] Error fetching shipments: {str(e)}")
             return []
+    
+    def update_delivery_status(self, tracking_number, delivered=True, current_status=None, next_steps=None):
+        """
+        Updates the delivery status in Odoo stock.picking model.
+        
+        Args:
+            tracking_number: The DHL tracking number
+            delivered: Boolean indicating if the shipment is delivered
+            current_status: Current status description for non-delivered shipments
+            next_steps: Next steps description for non-delivered shipments
+            
+        Returns:
+            Boolean indicating success or failure
+        """
+        try:
+            # Find the stock.picking record with this tracking number
+            picking_ids = self.models.execute_kw(
+                self.db, self.uid, self.password,
+                'stock.picking', 'search',
+                [
+                    [
+                        ('carrier_tracking_ref', '=', tracking_number),
+                        ('carrier_id.name', 'ilike', 'DHL')
+                    ]
+                ]
+            )
+            
+            if not picking_ids:
+                print(f"[-] No stock.picking record found for tracking number {tracking_number}")
+                return False
+            
+            # Update fields based on delivery status
+            if delivered:
+                # Set delivered to YES and clear status field
+                update_result = self.models.execute_kw(
+                    self.db, self.uid, self.password,
+                    'stock.picking', 'write',
+                    [picking_ids, {'x_studio_delivered_': 'YES', 'x_studio_status': ''}]
+                )
+            else:
+                # For non-delivered: update status field with current status + next steps
+                status_text = ""
+                if current_status:
+                    status_text += current_status
+                if next_steps:
+                    if status_text:
+                        status_text += " | " + next_steps
+                    else:
+                        status_text = next_steps
+                
+                update_result = self.models.execute_kw(
+                    self.db, self.uid, self.password,
+                    'stock.picking', 'write',
+                    [picking_ids, {'x_studio_status': status_text}]
+                )
+                
+                if update_result:
+                    print(f"[+] Updated status for tracking {tracking_number}: {status_text}")
+                    return True
+            
+            if update_result:
+                print(f"[+] Updated delivery status for tracking {tracking_number}: YES")
+                return True
+            else:
+                print(f"[-] Failed to update delivery status for tracking {tracking_number}")
+                return False
+                
+        except Exception as e:
+            print(f"[-] Error updating delivery status for {tracking_number}: {str(e)}")
+            return False
 
 class DHLTracker:
     def __init__(self):
@@ -164,6 +235,7 @@ class DHLTracker:
         }
         
         response = requests.get(self.base_url, headers=headers, params=params)
+        time.sleep(5)  # Rate limiting: wait 5 seconds between requests (DHL API limit)
         
         if response.status_code == 200:
             return response.json()
@@ -381,6 +453,15 @@ def main():
                     # Get status from DHL API
                     status_description, next_steps, is_delivered = dhl_tracker.get_shipment_status(tracking)
                     status_display = status_description[:13] + '..' if len(status_description) > 15 else status_description
+                    
+                    # Update Odoo based on delivery status
+                    if is_delivered:
+                        odoo_client.update_delivery_status(tracking, delivered=True)
+                    else:
+                        # Update status field for non-delivered shipments
+                        odoo_client.update_delivery_status(tracking, delivered=False, 
+                                                         current_status=status_description, 
+                                                         next_steps=next_steps)
                     
                     print(f"{idx:<3} | {tracking:<20} | {partner:<25} | {reference:<15} | {date:<12} | {status_display:<15}")
                     

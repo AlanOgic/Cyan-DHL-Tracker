@@ -2,6 +2,7 @@
 import os
 import json
 import requests
+import time
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -37,6 +38,7 @@ class DHLTracker:
             params["service"] = service
         
         response = requests.get(self.base_url, headers=headers, params=params)
+        time.sleep(5)  # Rate limiting: wait 5 seconds between requests (DHL API limit)
         
         if response.status_code == 200:
             return response.json()
