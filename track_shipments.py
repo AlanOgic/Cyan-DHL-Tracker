@@ -39,7 +39,7 @@ class OdooClient:
                     ('carrier_tracking_ref', '!=', False),
                     ('carrier_id.name', 'ilike', 'DHL'),
                     ('state', '=', 'done'),
-                    ('x_studio_delivered_', '!=', 'YES')
+                    ('x_studio_delivered_', '=', False)
                 ]
             ],
             {
@@ -101,23 +101,21 @@ class OdooClient:
                 update_result = self.models.execute_kw(
                     self.db, self.uid, self.password,
                     'stock.picking', 'write',
-                    [picking_ids, {'x_studio_delivered_': 'YES', 'x_studio_status': ''}]
+                    [picking_ids, {'x_studio_delivered_': True, 'x_studio_last_status': ''}]
                 )
             else:
-                # For non-delivered: update status field with current status + next steps
-                status_text = ""
+                # For non-delivered: update status field with current status + next steps (multi-line)
+                status_lines = []
                 if current_status:
-                    status_text += current_status
+                    status_lines.append(f"Status: {current_status}")
                 if next_steps:
-                    if status_text:
-                        status_text += " | " + next_steps
-                    else:
-                        status_text = next_steps
+                    status_lines.append(f"Next Steps: {next_steps}")
+                status_text = "\n".join(status_lines)
                 
                 update_result = self.models.execute_kw(
                     self.db, self.uid, self.password,
                     'stock.picking', 'write',
-                    [picking_ids, {'x_studio_status': status_text}]
+                    [picking_ids, {'x_studio_last_status': status_text}]
                 )
                 
                 if update_result:
