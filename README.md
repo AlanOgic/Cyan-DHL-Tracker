@@ -65,6 +65,50 @@ For more information about the DHL Tracking API, refer to the documentation in t
 - `track.yaml` - OpenAPI specification for the DHL Tracking API
 - `Group Shipment Tracking Request.postman_collection.json` - Postman collection for testing
 
+## Automated Tracking with Docker
+
+For continuous automated tracking, use the Docker setup:
+
+### Quick Start with Docker
+
+1. **Configure environment variables:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your credentials including WEBHOOK_URL
+   ```
+
+2. **Run with Docker Compose:**
+   ```bash
+   docker-compose up -d
+   ```
+
+3. **View logs:**
+   ```bash
+   docker-compose logs -f dhl-tracker
+   ```
+
+4. **Stop the service:**
+   ```bash
+   docker-compose down
+   ```
+
+### Features
+- **Automated tracking every 30 minutes**
+- **Automatic Odoo updates** for delivery status
+- **Webhook notifications** with shipment data
+- **Auto-restart** on container failure
+- **Health checks** for monitoring
+
+The automated tracker will:
+- Check all non-delivered DHL shipments in Odoo
+- Update delivery status automatically
+- Send webhook notifications with:
+  - List of shipments in transit
+  - Newly delivered shipments
+  - Summary statistics
+
+## Manual Usage
+
 ## Requirements
 
 - Python 3.6+
