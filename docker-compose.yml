@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  dhl-tracker:
+    build: .
+    container_name: dhl-automated-tracker
+    restart: unless-stopped
+    environment:
+      - DHL_API_KEY=${DHL_API_KEY}
+      - ODOO_URL=${ODOO_URL}
+      - ODOO_DB=${ODOO_DB}
+      - ODOO_USERNAME=${ODOO_USERNAME}
+      - ODOO_PASSWORD=${ODOO_PASSWORD}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+    env_file:
+      - .env
+    volumes:
+      # Optional: Mount logs directory for persistent logging
+      - ./logs:/app/logs
+    networks:
+      - dhl-tracker-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; print('Health check passed')"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 5s
+
+networks:
+  dhl-tracker-network:
+    driver: bridge
