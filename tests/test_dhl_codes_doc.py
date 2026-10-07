@@ -12,6 +12,17 @@ def test_committed_page_matches_the_tracker_code():
     assert committed == dhl_codes_doc.render(), "docs are stale: run `python dhl_codes_doc.py`"
 
 
+def test_page_is_the_english_reference():
+    assert dhl_codes_doc.OUTPUT_PATH.name == "dhl-tracking-codes.md"
+    assert dhl_codes_doc.render().startswith("# DHL tracking codes\n")
+
+
+def test_family_titles_are_the_labels_used_in_mattermost_alerts():
+    assert {key: dhl_codes_doc.GROUP_TITLES[key] for key in FAMILIES} == {
+        key: family.label for key, family in FAMILIES.items()
+    }
+
+
 def test_catalogue_lists_each_express_event_code_once():
     codes = [event.code for event in dhl_codes_doc.EVENT_CODES]
 
@@ -27,13 +38,13 @@ def test_every_alert_code_sits_in_its_alert_family():
     }
 
 
-EXPECTED_PRIORITY = {"customs": "Haute", "delivery": "Haute", "return": "Urgente", "incident": "Moyenne"}
+EXPECTED_PRIORITY = {"customs": "High", "delivery": "High", "return": "Urgent", "incident": "Medium"}
 
 
 def test_alert_column_follows_the_tracker_rules():
     assert dhl_codes_doc.alert_label("DF") == "—"
     assert dhl_codes_doc.alert_label("OH") == "Mattermost"
-    assert dhl_codes_doc.alert_label("HP") == "**Ticket** · Haute"
+    assert dhl_codes_doc.alert_label("HP") == "**Ticket** · High"
     for code, alert in ALERT_CODES.items():
         expected = (
             "Mattermost" if code in DEFAULT_TICKET_SKIP_CODES

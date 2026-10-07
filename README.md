@@ -1,6 +1,6 @@
 # Cyan-DHL-Tracker
 
-> **[Codes de suivi DHL](docs/codes-suivi-dhl.md)**: what each DHL tracking code means and which ones raise an alert or a Helpdesk ticket (French).
+> **[DHL tracking codes](docs/dhl-tracking-codes.md)**: what each DHL tracking code means and which ones raise an alert or a Helpdesk ticket.
 
 Tracks DHL shipments for Cyanview's Odoo deliveries. It reads outgoing DHL pickings from Odoo, checks each tracking number against the DHL Shipment Tracking API, and writes the delivery status back to Odoo.
 
@@ -131,7 +131,7 @@ An alert then:
 
 An alert counts as sent as soon as one channel received it. If every channel fails, the code is not recorded and the alert is retried at the next check. A delivered shipment whose alert failed (for example DD, delivered damaged) stays tracked until the alert gets through.
 
-A reference of every code, with what each one means and what the tracker does with it, is in [docs/codes-suivi-dhl.md](docs/codes-suivi-dhl.md) (French). `dhl_codes_doc.py` generates it from the tracker's own code, so the alert, ticket and priority columns always match what the tracker does. After changing the alert codes, families or skip codes, run `python dhl_codes_doc.py`; `tests/test_dhl_codes_doc.py` fails while the page is out of date.
+A reference of every code, with what each one means and what the tracker does with it, is in [docs/dhl-tracking-codes.md](docs/dhl-tracking-codes.md). `dhl_codes_doc.py` generates it from the tracker's own code, so the alert, ticket and priority columns always match what the tracker does. After changing the alert codes, families or skip codes, run `python dhl_codes_doc.py`; `tests/test_dhl_codes_doc.py` fails while the page is out of date.
 
 ## Tests
 

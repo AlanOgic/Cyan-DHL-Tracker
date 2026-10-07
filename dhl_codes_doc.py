@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate docs/codes-suivi-dhl.md, the DHL tracking codes reference, in Markdown so GitLab and GitHub render it.
+"""Generate docs/dhl-tracking-codes.md, the DHL tracking codes reference, in Markdown so GitLab and GitHub render it.
 
-Alert columns, priorities, colours, limits and the status example come from the tracker's own
-modules, so the page cannot drift from what the tracker does: tests/test_dhl_codes_doc.py fails
-until the page is regenerated with `python dhl_codes_doc.py`.
+Alert columns, priorities, colours, family names, limits and the status example come from the
+tracker's own modules, so the page cannot drift from what the tracker does: tests/test_dhl_codes_doc.py
+fails until the page is regenerated with `python dhl_codes_doc.py`.
 """
 import re
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ from dhl_client import MIN_SECONDS_BETWEEN_CALLS
 from odoo_client import TRACKING_EXPIRED_PREFIX, format_status_text
 from shipment_alerts import ALERT_CODES, ALERT_MAX_EVENT_AGE, FAMILIES
 
-OUTPUT_PATH = Path(__file__).resolve().parent / "docs" / "codes-suivi-dhl.md"
+OUTPUT_PATH = Path(__file__).resolve().parent / "docs" / "dhl-tracking-codes.md"
 EXPRESS_EVENT_CODE_COUNT = 40  # official DHL Express event codes (API/status_1.csv)
 DHL_DAILY_QUOTA = 250  # DHL developer portal default service level (not enforced by the tracker); see README
 HOURLY_CALLS_PER_DAY = 24
@@ -23,14 +23,9 @@ EXAMPLE_TRACKING_NUMBER = "1234567890"  # fictitious: the GitHub copy of this pa
 STATUS_EXAMPLE = ("Shipment on hold pending duty payment", "Pay the duties online", "HP")
 NO_ALERT = "—"
 
-PRIORITY_LABELS = {"0": "Basse", "1": "Moyenne", "2": "Haute", "3": "Urgente"}
-GROUP_TITLES = {
-    "flow": "Parcours normal",
-    "customs": "Douane & paiement",
-    "delivery": "Échec de livraison & adresse",
-    "return": "Refus, retour, dommage",
-    "incident": "Incidents DHL",
-}
+PRIORITY_LABELS = {"0": "Low", "1": "Medium", "2": "High", "3": "Urgent"}  # helpdesk.ticket priority
+# Problem families keep the labels used in the Mattermost alerts
+GROUP_TITLES = {"flow": "Normal journey", **{key: family.label for key, family in FAMILIES.items()}}
 
 
 @dataclass(frozen=True)
@@ -44,86 +39,88 @@ class EventCode:
 
 
 EVENT_CODES = (
-    EventCode("PU", "Shipment pick up", "Colis enlevé chez l'expéditeur.", "flow"),
-    EventCode("SA", "Shipment acceptance", "Pris en charge par DHL.", "flow"),
-    EventCode("PL", "Processed at location", "Traité dans un site DHL.", "flow"),
-    EventCode("DF", "Depart facility", "A quitté un site DHL.", "flow"),
-    EventCode("AF", "Arrived facility", "Arrivé dans un site DHL.", "flow"),
-    EventCode("AR", "Arrival in delivery facility", "Arrivé à l'agence qui va livrer.", "flow"),
-    EventCode("WC", "With delivering courier", "En tournée de livraison.", "flow"),
-    EventCode("OK", "Delivery", "Livré.", "flow", no_estimated_delivery=True),
-    EventCode("TR", "Record of transfer", "Transfert enregistré entre deux réseaux.", "flow"),
-    EventCode("SM", "Scheduled for movement", "Planifié sur un prochain acheminement.", "flow", new_since_june_2024=True),
+    EventCode("PU", "Shipment pick up", "Picked up from the shipper.", "flow"),
+    EventCode("SA", "Shipment acceptance", "Accepted by DHL.", "flow"),
+    EventCode("PL", "Processed at location", "Processed at a DHL facility.", "flow"),
+    EventCode("DF", "Depart facility", "Left a DHL facility.", "flow"),
+    EventCode("AF", "Arrived facility", "Arrived at a DHL facility.", "flow"),
+    EventCode("AR", "Arrival in delivery facility", "Arrived at the station that will deliver it.", "flow"),
+    EventCode("WC", "With delivering courier", "Out for delivery.", "flow"),
+    EventCode("OK", "Delivery", "Delivered.", "flow", no_estimated_delivery=True),
+    EventCode("TR", "Record of transfer", "Transfer recorded between two networks.", "flow"),
+    EventCode("SM", "Scheduled for movement", "Booked on an upcoming movement.", "flow", new_since_june_2024=True),
     EventCode("FD", "Forward destination (DD's expected)",
-              "Réacheminé vers une autre destination, livraison toujours attendue.", "flow"),
-    EventCode("AD", "Agreed delivery", "Date ou lieu de livraison convenu avec le destinataire.", "flow"),
-    EventCode("SC", "Service changed", "Produit ou service DHL modifié.", "flow"),
-    EventCode("IC", "In clearance processing", "En cours de dédouanement.", "customs"),
-    EventCode("RR", "Response received", "Réponse reçue, souvent de la douane.", "customs"),
-    EventCode("CR", "Clearance release", "Dédouané.", "customs"),
-    EventCode("BR", "Broker release", "Libéré par le transitaire.", "customs", no_estimated_delivery=True),
-    EventCode("BN", "Customer broker notified", "Transitaire du destinataire prévenu.", "customs"),
+              "Rerouted to another destination; delivery still expected.", "flow"),
+    EventCode("AD", "Agreed delivery", "Delivery date or place agreed with the receiver.", "flow"),
+    EventCode("SC", "Service changed", "DHL product or service changed.", "flow"),
+    EventCode("IC", "In clearance processing", "Customs clearance in progress.", "customs"),
+    EventCode("RR", "Response received", "Response received, often from customs.", "customs"),
+    EventCode("CR", "Clearance release", "Cleared by customs.", "customs"),
+    EventCode("BR", "Broker release", "Released by the broker.", "customs", no_estimated_delivery=True),
+    EventCode("BN", "Customer broker notified", "The receiver's broker was notified.", "customs"),
     EventCode("CD", "Controllable clearance delay",
-              "Retard de douane que l'on peut débloquer : document ou information manquante.", "customs"),
+              "Customs delay we can unblock: a missing document or piece of information.", "customs"),
     EventCode("UD", "Uncontrollable clearance delay",
-              "Retard de douane hors de notre main : contrôle, inspection.", "customs"),
-    EventCode("HP", "Held for payment", "Bloqué jusqu'au paiement des droits et taxes.", "customs"),
-    EventCode("PY", "Payment", "Paiement reçu.", "customs", new_since_june_2024=True),
-    EventCode("ND", "Not delivered", "Non livré.", "delivery"),
-    EventCode("NH", "Not home", "Destinataire absent.", "delivery", no_estimated_delivery=True),
-    EventCode("MD", "Missed delivery cycle", "Tournée de livraison manquée.", "delivery"),
-    EventCode("CA", "Closed on arrival", "Destinataire fermé au passage du livreur.", "delivery",
+              "Customs delay outside our control: check or inspection.", "customs"),
+    EventCode("HP", "Held for payment", "Held until duties and taxes are paid.", "customs"),
+    EventCode("PY", "Payment", "Payment received.", "customs", new_since_june_2024=True),
+    EventCode("ND", "Not delivered", "Not delivered.", "delivery"),
+    EventCode("NH", "Not home", "The receiver was not at home.", "delivery", no_estimated_delivery=True),
+    EventCode("MD", "Missed delivery cycle", "Missed the delivery round.", "delivery"),
+    EventCode("CA", "Closed on arrival", "The receiver's premises were closed when the courier came.", "delivery",
               no_estimated_delivery=True),
-    EventCode("CC", "Awaiting cnee collection", "À retirer par le destinataire en agence ou point relais.",
+    EventCode("CC", "Awaiting cnee collection",
+              "Waiting for the receiver to collect it at a DHL station or service point.",
               "delivery", no_estimated_delivery=True),
-    EventCode("BA", "Bad address", "Adresse incorrecte ou incomplète.", "delivery"),
-    EventCode("CM", "Customer moved", "Le destinataire a déménagé.", "delivery"),
-    EventCode("RD", "Refused delivery", "Refusé par le destinataire.", "return", no_estimated_delivery=True),
-    EventCode("RT", "Returned to consignor", "Retourné à l'expéditeur, donc à nous.", "return",
+    EventCode("BA", "Bad address", "Wrong or incomplete address.", "delivery"),
+    EventCode("CM", "Customer moved", "The receiver has moved.", "delivery"),
+    EventCode("RD", "Refused delivery", "Refused by the receiver.", "return", no_estimated_delivery=True),
+    EventCode("RT", "Returned to consignor", "Returned to the shipper, that is, to us.", "return",
               no_estimated_delivery=True),
-    EventCode("DD", "Delivered damaged", "Livré endommagé.", "return", no_estimated_delivery=True),
-    EventCode("PD", "Partial delivery", "Livraison partielle : des colis manquent.", "return",
+    EventCode("DD", "Delivered damaged", "Delivered damaged.", "return", no_estimated_delivery=True),
+    EventCode("PD", "Partial delivery", "Partial delivery: pieces are missing.", "return",
               no_estimated_delivery=True),
-    EventCode("DS", "Destroyed / disposal", "Envoi détruit.", "return", no_estimated_delivery=True),
-    EventCode("OH", "On hold", "Envoi en attente chez DHL.", "incident"),
-    EventCode("SS", "Shipment stopped", "Envoi stoppé.", "incident", no_estimated_delivery=True),
-    EventCode("MS", "Mis-sort", "Erreur de tri, réacheminement en cours.", "incident"),
-    EventCode("MC", "Miscode", "Erreur de code ou d'étiquette.", "incident"),
+    EventCode("DS", "Destroyed / disposal", "Shipment destroyed.", "return", no_estimated_delivery=True),
+    EventCode("OH", "On hold", "Held at DHL.", "incident"),
+    EventCode("SS", "Shipment stopped", "Shipment stopped.", "incident", no_estimated_delivery=True),
+    EventCode("MS", "Mis-sort", "Sorting error, being rerouted.", "incident"),
+    EventCode("MC", "Miscode", "Code or label error.", "incident"),
     EventCode("TP", "Forwarded to 3rd party - no DD's",
-              "Confié à un transporteur tiers, plus de suivi de livraison.", "incident", no_estimated_delivery=True),
-    EventCode("CS", "Closed shipment", "Dossier d'envoi clôturé.", "incident", no_estimated_delivery=True),
+              "Handed over to a third-party carrier; no more delivery tracking.", "incident",
+              no_estimated_delivery=True),
+    EventCode("CS", "Closed shipment", "Shipment file closed.", "incident", no_estimated_delivery=True),
 )
 
 GLOBAL_STATUSES = (
-    ("pre-transit", "Étiquette créée, pas encore remis à DHL."),
-    ("transit", "En route, y compris en douane ou en attente."),
-    ("delivered", "Livré. L'envoi est marqué livré dans Odoo."),
-    ("failure", "Échec : non livré, retour, perte."),
-    ("unknown", "DHL ne sait pas encore."),
+    ("pre-transit", "Label created, not yet handed over to DHL."),
+    ("transit", "On its way, including in customs or on hold."),
+    ("delivered", "Delivered. The delivery is marked delivered in Odoo."),
+    ("failure", "Failed: not delivered, returned, lost."),
+    ("unknown", "DHL does not know yet."),
 )
 NUMERIC_STATUSES = (("104", "pre-transit"), ("102", "transit"), ("101", "delivered"), ("103", "failure"))
 
 API_FIELDS = (
-    ("Statut global", "status.statusCode", "Oui", "Toujours présent (champ obligatoire)."),
-    ("Code du dernier événement", "events[].status", "Oui", "Code Express de 2 lettres."),
-    ("Description", "description", "Oui", "En anglais, ou en français avec `language=fr`."),
-    ("Prochaines étapes", "status.nextSteps", "Parfois", "Seulement quand DHL a une consigne."),
-    ("Historique complet", "events[]", "Oui", "30 à 45 événements par envoi, avec date, heure et lieu."),
-    ("Lieu de l'événement", "location.address", "Oui", "Ville ou hub, par exemple CINCINNATI HUB."),
-    ("Produit", "details.product", "Oui", "EXPRESS 12:00 (Y), EXPRESS WORLDWIDE (P)."),
-    ("Origine et destination", "origin, destination", "Oui", "Ville et pays seulement."),
-    ("Colis", "details.totalNumberOfPieces", "Oui", "Nombre de colis et leurs identifiants."),
-    ("Preuve de livraison", "details.proofOfDelivery", "Parfois", "Liens vers le POD et la signature, une fois livré."),
-    ("Expéditeur et destinataire", "details.shipper, consignee", "Oui", ""),
-    ("Date de livraison estimée", "estimatedTimeOfDelivery", "Non", "Vide sur nos envois Express."),
-    ("Poids et dimensions", "details.weight, dimensions", "Non", "Vides sur nos envois Express."),
+    ("Global status", "status.statusCode", "Yes", "Always present (required field)."),
+    ("Latest event code", "events[].status", "Yes", "Two-letter Express code."),
+    ("Description", "description", "Yes", "In English, or in French with `language=fr`."),
+    ("Next steps", "status.nextSteps", "Sometimes", "Only when DHL has an instruction."),
+    ("Full history", "events[]", "Yes", "30 to 45 events per shipment, with date, time and place."),
+    ("Event location", "location.address", "Yes", "City or hub, for example CINCINNATI HUB."),
+    ("Product", "details.product", "Yes", "EXPRESS 12:00 (Y), EXPRESS WORLDWIDE (P)."),
+    ("Origin and destination", "origin, destination", "Yes", "City and country only."),
+    ("Pieces", "details.totalNumberOfPieces", "Yes", "Number of pieces and their IDs."),
+    ("Proof of delivery", "details.proofOfDelivery", "Sometimes", "Links to the POD and signature, once delivered."),
+    ("Shipper and receiver", "details.shipper, consignee", "Yes", ""),
+    ("Estimated delivery date", "estimatedTimeOfDelivery", "No", "Empty on our Express shipments."),
+    ("Weight and dimensions", "details.weight, dimensions", "No", "Empty on our Express shipments."),
 )
 
-TITLE_LEVELS = "Un événement, trois niveaux"
-TITLE_CODES = f"Les {EXPRESS_EVENT_CODE_COUNT} codes événement Express"
-TITLE_TICKETS = "Quand un ticket est ouvert"
-TITLE_API = "Ce que l'API renvoie pour nos envois"
-TITLE_LIMITS = "Limites à connaître"
+TITLE_LEVELS = "One event, three levels"
+TITLE_CODES = f"The {EXPRESS_EVENT_CODE_COUNT} Express event codes"
+TITLE_TICKETS = "When a ticket is opened"
+TITLE_API = "What the API returns for our shipments"
+TITLE_LIMITS = "Known limits"
 
 
 def alert_label(code: str) -> str:
@@ -159,20 +156,20 @@ def _intro() -> list:
         for title in (TITLE_LEVELS, TITLE_CODES, TITLE_TICKETS, TITLE_API, TITLE_LIMITS)
     )
     return [
-        "# Codes de suivi DHL",
+        "# DHL tracking codes",
         "",
-        "> Page générée par `dhl_codes_doc.py` depuis le code du tracker : ne pas la modifier à la main. "
-        "Après un changement des codes d'alerte, relancer `python dhl_codes_doc.py` ; "
-        "`tests/test_dhl_codes_doc.py` échoue tant que la page n'est pas à jour.",
+        "> Generated by `dhl_codes_doc.py` from the tracker's code: do not edit by hand. "
+        "After changing the alert codes, run `python dhl_codes_doc.py`; "
+        "`tests/test_dhl_codes_doc.py` fails until the page is up to date.",
         "",
-        "Ce que DHL renvoie pour chacun de nos envois Express, comment lire ses codes, "
-        "et lesquels ouvrent un ticket dans le Helpdesk.",
+        "What DHL returns for each of our Express shipments, how to read its codes, "
+        "and which ones open a Helpdesk ticket.",
         "",
-        "Sources : API DHL Shipment Tracking – Unified v1.5.8 (`API/track_v1.5.8.yaml`), "
-        "liste officielle des codes Express DHL (`API/status_1.csv`), réponses réelles de nos envois "
-        "(octobre 2026). Tous nos transporteurs DHL dans Odoo sont des produits Express.",
+        "Sources: DHL Shipment Tracking – Unified API v1.5.8 (`API/track_v1.5.8.yaml`), "
+        "DHL's official list of Express codes (`API/status_1.csv`), real responses for our shipments "
+        "(October 2026). All our DHL carriers in Odoo are Express products.",
         "",
-        f"**Sommaire :** {contents}",
+        f"**Contents:** {contents}",
     ]
 
 
@@ -180,39 +177,38 @@ def _levels() -> list:
     return [
         f"## {TITLE_LEVELS}",
         "",
-        "Chaque événement DHL porte trois informations superposées. Exemple, avec un numéro fictif : "
-        f"l'envoi `{EXAMPLE_TRACKING_NUMBER}` en EXPRESS 12:00, de Bruxelles vers l'Ohio, "
-        "le 2026-10-06 à 05:51 (−04:00) à CINCINNATI HUB, Ohio, USA.",
+        "Every DHL event carries three layers of information. Example, with a fictitious number: "
+        f"shipment `{EXAMPLE_TRACKING_NUMBER}`, EXPRESS 12:00 from Brussels to Ohio, "
+        "on 2026-10-06 at 05:51 (−04:00) at CINCINNATI HUB, Ohio, USA.",
         "",
-        *_table(("Niveau", "Champ API", "Exemple", "À quoi il sert"), (
-            ("1 · Statut global", "`status.statusCode`", "`transit`",
-             f"{len(GLOBAL_STATUSES)} valeurs communes à tous les services DHL. "
-             "**Seule information utilisée pour décider qu'un envoi est livré.**"),
-            ("2 · Code Express", "`events[].status`", "`DF`",
-             f"Depart facility. {EXPRESS_EVENT_CODE_COUNT} codes de 2 lettres qui disent ce qui s'est passé, "
-             "et donc s'il faut agir."),
+        *_table(("Level", "API field", "Example", "What it is for"), (
+            ("1 · Global status", "`status.statusCode`", "`transit`",
+             f"{len(GLOBAL_STATUSES)} values shared by every DHL service. "
+             "**The only information used to decide that a shipment is delivered.**"),
+            ("2 · Express code", "`events[].status`", "`DF`",
+             f"Depart facility. {EXPRESS_EVENT_CODE_COUNT} two-letter codes that say what happened, "
+             "and so whether to act."),
             ("3 · Description", "`description`", "Shipment has departed from a DHL facility CINCINNATI HUB - USA",
-             "Texte libre, en français avec `language=fr` : « L'envoi a quitté un site DHL ». "
-             "Jamais utilisé pour décider : « The shipment could not be delivered » contient aussi "
-             "le mot « delivered »."),
+             "Free text, in French with `language=fr`. Never used to decide: "
+             "\"The shipment could not be delivered\" also contains the word \"delivered\"."),
         )),
         "",
-        f"### Les {len(GLOBAL_STATUSES)} statuts globaux",
+        f"### The {len(GLOBAL_STATUSES)} global statuses",
         "",
-        *_table(("Statut", "Signification"), ((f"`{status}`", meaning) for status, meaning in GLOBAL_STATUSES)),
+        *_table(("Status", "Meaning"), ((f"`{status}`", meaning) for status, meaning in GLOBAL_STATUSES)),
         "",
-        f"### Les {len(NUMERIC_STATUSES)} codes numériques Express",
+        f"### The {len(NUMERIC_STATUSES)} numeric Express codes",
         "",
-        "Ils figurent sur le statut global de l'envoi, pas sur les événements.",
+        "They appear on the shipment's global status, not on its events.",
         "",
-        *_table(("Code", "Statut global"), ((f"`{code}`", f"`{status}`") for code, status in NUMERIC_STATUSES)),
+        *_table(("Code", "Global status"), ((f"`{code}`", f"`{status}`") for code, status in NUMERIC_STATUSES)),
     ]
 
 
 def _event_row(event: EventCode) -> tuple:
     notes = "".join((
-        " _(sans date estimée)_" if event.no_estimated_delivery else "",
-        " _(depuis juin 2024)_" if event.new_since_june_2024 else "",
+        " _(no estimated delivery)_" if event.no_estimated_delivery else "",
+        " _(since June 2024)_" if event.new_since_june_2024 else "",
     ))
     return f"`{event.code}`", event.dhl_label, event.meaning + notes, alert_label(event.code)
 
@@ -223,13 +219,13 @@ def _codes_section() -> list:
     lines = [
         f"## {TITLE_CODES}",
         "",
-        f"{len(ALERT_CODES)} codes signalent un problème : {len(ticketed)} ouvrent un ticket, et {skipped} "
-        "sont seulement signalés sur Mattermost, car DHL les règle le plus souvent seul "
-        "(réglage par défaut, modifiable avec `HELPDESK_SKIP_CODES`). "
-        "Les autres décrivent le parcours normal du colis.",
+        f"{len(ALERT_CODES)} codes report a problem: {len(ticketed)} open a ticket, and {skipped} "
+        "are only posted to Mattermost, because DHL usually resolves them on its own "
+        "(default setting, configurable with `HELPDESK_SKIP_CODES`). "
+        "The others describe the parcel's normal journey.",
         "",
-        "_sans date estimée_ : DHL ne donne pas de date de livraison estimée avec cet événement "
-        "(« no EDD » dans sa liste).",
+        "_no estimated delivery_: DHL gives no estimated delivery date with this event "
+        "(\"no EDD\" in its list).",
     ]
     for group, title in GROUP_TITLES.items():
         events = [event for event in EVENT_CODES if event.group == group]
@@ -237,13 +233,13 @@ def _codes_section() -> list:
             "",
             f"### {title} · {len(events)} codes",
             "",
-            *_table(("Code", "Libellé DHL", "Ce que ça veut dire", "Alerte"), map(_event_row, events)),
+            *_table(("Code", "DHL label", "What it means", "Alert"), map(_event_row, events)),
         ]
     return [
         *lines,
         "",
-        "Vu sur nos envois mais absent de la liste DHL : `SD`, « Shipment information received ». "
-        "DHL prévient que de nouveaux codes peuvent apparaître. Un code inconnu n'ouvre jamais de ticket.",
+        "Seen on our shipments but missing from DHL's list: `SD`, \"Shipment information received\". "
+        "DHL warns that new codes may appear. An unknown code never opens a ticket.",
     ]
 
 
@@ -258,7 +254,7 @@ def _priority_rows() -> list:
         )
         for family in FAMILIES.values()
     ]
-    return [*rows, ("Sans ticket", "Mattermost seulement", NO_ALERT, _codes(sorted(DEFAULT_TICKET_SKIP_CODES)))]
+    return [*rows, ("No ticket", "Mattermost only", NO_ALERT, _codes(sorted(DEFAULT_TICKET_SKIP_CODES)))]
 
 
 def _tickets_section() -> list:
@@ -266,42 +262,41 @@ def _tickets_section() -> list:
     return [
         f"## {TITLE_TICKETS}",
         "",
-        "Il n'y a pas de ticket par envoi. Le tracker alerte seulement quand DHL signale un problème "
-        f"et que les quatre conditions sont réunies. {_codes(sorted(DEFAULT_TICKET_SKIP_CODES))} "
-        "sont signalés sur Mattermost sans ticket.",
+        "There is no ticket per shipment. The tracker raises an alert only when DHL reports a problem "
+        f"and all four conditions hold. {_codes(sorted(DEFAULT_TICKET_SKIP_CODES))} "
+        "are posted to Mattermost without a ticket.",
         "",
-        "1. **Dernier événement DHL** : le tracker lit l'événement le plus récent de l'envoi.",
-        f"2. **Code de problème** : son code fait partie des {len(ALERT_CODES)} codes de problème.",
-        "3. **Pas encore signalé** : le statut Odoo de l'envoi ne porte pas déjà ce code.",
-        f"4. **Récent** : l'événement date de moins de {max_age_days} jours. "
-        "Les vieilles histoires sont notées dans Odoo, sans ticket.",
+        "1. **Latest DHL event**: the tracker reads the shipment's most recent event.",
+        f"2. **Problem code**: its code is one of the {len(ALERT_CODES)} problem codes.",
+        "3. **Not reported yet**: the shipment's Odoo status does not already carry this code.",
+        f"4. **Recent**: the event is less than {max_age_days} days old. "
+        "Older events are recorded in Odoo, without a ticket.",
         "",
-        "### Ticket Helpdesk",
+        "### Helpdesk ticket",
         "",
-        f"- Équipe {DEFAULT_HELPDESK_TEAM}, tag{'s' if len(DEFAULT_HELPDESK_TAGS) > 1 else ''} "
+        f"- Team {DEFAULT_HELPDESK_TEAM}, tag{'s' if len(DEFAULT_HELPDESK_TAGS) > 1 else ''} "
         f"{', '.join(DEFAULT_HELPDESK_TAGS)}.",
-        "- Client et commande de vente liés, avec les liens vers la livraison et le suivi DHL.",
-        "- Un nouveau problème sur un envoi dont le ticket est encore ouvert devient une note interne "
-        "sur ce ticket, pas un second ticket.",
-        "- Le tracker n'écrit que des notes internes. Le client ne reçoit aucun e-mail.",
+        "- Customer and sale order linked, with links to the delivery and to the DHL tracking page.",
+        "- A new problem on a shipment whose ticket is still open becomes an internal note on that ticket, "
+        "not a second ticket.",
+        "- The tracker only writes internal notes. The customer never gets an e-mail.",
         "",
-        "### Message Mattermost",
+        "### Mattermost message",
         "",
-        "Un message par alerte, avec la couleur de la famille et le lien vers le ticket. "
-        "Actif dès que l'adresse du canal est configurée (`ALERT_WEBHOOK_URL`).",
+        "One message per alert, in the family's colour, with a link to the ticket. "
+        "Active as soon as the channel's address is set (`ALERT_WEBHOOK_URL`).",
         "",
-        "### Statut dans Odoo",
+        "### Status in Odoo",
         "",
-        "Le champ statut de la livraison garde le dernier code DHL, ce qui évite de signaler "
-        "deux fois le même problème :",
+        "The delivery's status field keeps the latest DHL code, so the same problem is never reported twice:",
         "",
         "```",
         format_status_text(*STATUS_EXAMPLE),
         "```",
         "",
-        "### Priorités et couleurs",
+        "### Priorities and colours",
         "",
-        *_table(("Famille", "Priorité du ticket", "Couleur Mattermost", "Codes"), _priority_rows()),
+        *_table(("Family", "Ticket priority", "Mattermost colour", "Codes"), _priority_rows()),
     ]
 
 
@@ -309,9 +304,9 @@ def _api_section() -> list:
     return [
         f"## {TITLE_API}",
         "",
-        "Vérifié sur de vrais envois Express en transit et livrés.",
+        "Checked on real Express shipments, in transit and delivered.",
         "",
-        *_table(("Donnée", "Champ API", "Disponible", "Remarque"),
+        *_table(("Data", "API field", "Available", "Note"),
                 ((label, f"`{path}`", available, note) for label, path, available, note in API_FIELDS)),
     ]
 
@@ -321,20 +316,20 @@ def _limits_section() -> list:
     return [
         f"## {TITLE_LIMITS}",
         "",
-        f"- **Quota DHL** : {DHL_DAILY_QUOTA} appels par jour et au plus un appel toutes les "
-        f"{MIN_SECONDS_BETWEEN_CALLS} secondes, partagés par tous les scripts. Le contrôle horaire coûte "
-        f"{HOURLY_CALLS_PER_DAY} appels par jour et par envoi suivi.",
-        f"- **Fenêtre de {TRACKING_WINDOW_DAYS} jours** : le contrôle automatique ne suit que les livraisons "
-        f"validées dans les {TRACKING_WINDOW_DAYS} derniers jours. Un envoi plus ancien ne se suit plus "
-        "qu'à la main, par son numéro, avec `shiptracker.py`.",
-        "- **Plusieurs numéros dans un seul champ** : Odoo ajoute « ,numéro » à la référence d'un picking "
-        "chaque fois qu'une étiquette DHL est créée pour lui ou pour un picking lié (étiquette régénérée, "
-        "retour). Ce sont des envois distincts, pas des colis : un envoi Express de plusieurs colis garde "
-        "un seul numéro. Le tracker suit chaque numéro, et c'est l'envoi le plus récent qui décide : "
-        "un retour encore en route garde le picking suivi, une étiquette jamais utilisée ne bloque rien.",
-        f"- **Suivi expiré** : un picking non livré validé depuis plus de {TRACKING_WINDOW_DAYS} jours passe "
-        f"en « {expired_label} » et n'est plus suivi. Au-delà, DHL ne connaît plus le numéro, ou renvoie "
-        "les événements d'un autre envoi plus récent : DHL réutilise ses numéros Express.",
+        f"- **DHL quota**: {DHL_DAILY_QUOTA} calls a day and at most one call every "
+        f"{MIN_SECONDS_BETWEEN_CALLS} seconds, shared by every script. The hourly check costs "
+        f"{HOURLY_CALLS_PER_DAY} calls a day per tracked shipment.",
+        f"- **{TRACKING_WINDOW_DAYS}-day window**: the automated check only tracks deliveries validated in the "
+        f"last {TRACKING_WINDOW_DAYS} days. An older shipment can only be tracked by hand, by its number, "
+        "with `shiptracker.py`.",
+        "- **Several numbers in one field**: Odoo appends \",number\" to a picking's reference each time a DHL "
+        "label is created for it or for a linked picking (re-generated label, return). These are separate "
+        "shipments, not pieces: a multi-piece Express shipment keeps a single number. The tracker tracks "
+        "each number, and the most recent shipment decides: a return still on its way keeps the picking "
+        "tracked, and a label that was never used blocks nothing.",
+        f"- **Tracking expired**: an undelivered picking validated more than {TRACKING_WINDOW_DAYS} days ago "
+        f"gets \"{expired_label}\" and is no longer tracked. Past that point DHL no longer knows the number, "
+        "or returns the events of a newer shipment: DHL reuses its Express numbers.",
     ]
 
 
@@ -342,8 +337,8 @@ def render() -> str:
     sections = (_intro(), _levels(), _codes_section(), _tickets_section(), _api_section(), _limits_section())
     lines = [line for section in sections for line in (*section, "")]
     footer = (
-        "---\n\n_Les colonnes Alerte, les priorités, les couleurs et les limites sont générées depuis "
-        "le code du tracker : elles ne peuvent pas diverger de ce qu'il fait._\n"
+        "---\n\n_The alert columns, priorities, colours and limits are generated from the tracker's code, "
+        "so they cannot drift from what it does._\n"
     )
     return "\n".join(lines) + "\n" + footer
 
