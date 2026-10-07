@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venvtrack/
+venv/
+
+# Runtime output
+logs/
+*.log
+dhl_tracking_*.json
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

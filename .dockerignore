@@ -53,3 +53,7 @@ Thumbs.db
 logs/
 *.json
 dhl_tracking_*
+# Tests and dev tooling
+tests/
+pytest.ini
+requirements-dev.txt

@@ -1,4 +1,3 @@
 requests
 python-dotenv
 schedule
-# xmlrpc-client # For Odoo API
