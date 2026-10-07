@@ -198,15 +198,31 @@ Docker does not restart or report an unhealthy container. To be alerted, set `HE
 - **healthchecks.io**: create a check with a 1-hour period and a 1-hour grace time, then use its ping URL (`https://hc-ping.com/<uuid>`).
 - **Uptime Kuma**: create a *Push* monitor with a heartbeat interval of about 2 hours, then use its push URL (`https://<host>/api/push/<token>?status=up`).
 
-The tracker sends a GET to that URL after each successful hourly check. The URL holds the monitor's secret token, so the tracker never logs it.
+The tracker sends a GET to that URL after each successful hourly check. The URL holds the monitor's secret token, so the tracker never logs it. Add the monitor's host to `EGRESS_ALLOWED_HOSTS` (see below), or the pings are refused.
 
 ### Container hardening
 
 The image only contains the runtime Python modules (an allow-list in `.dockerignore`), owned by root and run by an unprivileged user. Compose runs the container with a read-only filesystem (`/tmp` is a 1 MB in-memory filesystem for the health file, without executables), no Linux capabilities, `no-new-privileges`, and limits of 128 MB of RAM, a quarter of a CPU and 50 processes. The tracker normally uses about 25 MB and almost no CPU.
 
+### Egress allow-list
+
+The tracker sits on an internal Docker network with no route to the internet, the host or other containers. The network's bridge has no address on the host (gateway mode `isolated`), so host services listening on `0.0.0.0`, such as sshd or a reverse proxy, are out of reach as well. Its only way out is the `egress-proxy` container (tinyproxy, `proxy/`). The proxy only opens HTTPS tunnels, on port 443, to the exact host names in `EGRESS_ALLOWED_HOSTS`, and it refuses plain HTTP:
+
+```
+EGRESS_ALLOWED_HOSTS=api-eu.dhl.com,your-odoo-instance.odoo.com,your-mattermost.example.com
+```
+
+List DHL plus the hosts of `ODOO_URL`, `ALERT_WEBHOOK_URL`, `WEBHOOK_URL` and `HEARTBEAT_URL`. Compose refuses to start without it. When you add or change one of these URLs, update the list and run `docker compose up -d`. Otherwise the calls fail with a `ProxyError`, and the tracker turns unhealthy if Odoo is the one cut off. The proxy logs every refusal:
+
+```bash
+docker compose logs egress-proxy | grep refused
+```
+
+Even if the tracker were compromised, it could reach only those hosts. It could not reach the other services of the server or any other destination.
+
 ### Updating dependencies
 
-`requirements.txt` pins every runtime package, including the dependencies of `requests`, and the Dockerfile pins the Python base image (`python:3.11.17-slim-trixie`). Rebuilds are therefore identical until you change a pin. To update, bump the versions, run the tests, then rebuild with `docker compose up -d --build`.
+`requirements.txt` pins every runtime package, including the dependencies of `requests`, the Dockerfile pins the Python base image (`python:3.11.17-slim-trixie`) and `proxy/Dockerfile` pins Alpine (`alpine:3.24.2`, which provides tinyproxy). Rebuilds are therefore identical until you change a pin. To update, bump the versions, run the tests, then rebuild with `docker compose up -d --build`.
 
 ## DHL API Documentation
 

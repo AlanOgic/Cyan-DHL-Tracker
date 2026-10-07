@@ -31,6 +31,7 @@ python dhl_codes_doc.py       # regenerate docs/dhl-tracking-codes.md (DHL codes
 docker compose up -d --build
 docker compose logs -f dhl-tracker
 docker inspect --format '{{.State.Health.Status}}' dhl-automated-tracker   # healthy = an hourly check reached Odoo within 150 min
+docker compose logs egress-proxy | grep refused   # hosts the egress allow-list blocked
 docker compose down
 ```
 
@@ -95,5 +96,6 @@ Scripts mostly `print()`; the Odoo modules use `logging`, configured by each scr
 - Give `ODOO_API_KEY` to a dedicated Odoo bot user with only the rights the tracker needs (pickings, helpdesk tickets), as the Odoo docs recommend for integrations, never to a personal or admin account.
 - Docker marks an unhealthy container but never restarts it; only the `HEARTBEAT_URL` monitor alerts a person.
 - The image is built from an allow-list (`.dockerignore`): top-level `*.py` (minus `dhl_codes_doc.py`) and `requirements.txt` only. The container runs with a read-only filesystem, no capabilities and memory/CPU limits (`docker-compose.yml`); anything that needs to write a file must use `/tmp` (tmpfs).
+- In Docker the tracker has no direct network access. It sits on an `internal` network whose bridge has no host address (`gateway_mode_ipv4: isolated`; a plain internal network still lets containers reach host services on 0.0.0.0). It reaches the outside only through `egress-proxy` (tinyproxy, `proxy/`). The proxy's filter matches the whole request target (`FilterURLs`): only `^host:443$` CONNECT tunnels to the hosts in `EGRESS_ALLOWED_HOSTS` (required in `.env`) pass, and plain HTTP never does. A new external host (another URL setting, a new API) must be added there. `requests` finds the proxy through `HTTPS_PROXY`, so never set `trust_env = False` or `proxies=` on a session.
 - `requirements.txt` and the Dockerfile base image are pinned (with the dependencies of `requests`). Bump them on purpose: change the pins, run the tests, rebuild.
 - `track_shipments.py` and `detailed_tracker.py` write `dhl_tracking_*.json` to the current directory (git- and docker-ignored).
