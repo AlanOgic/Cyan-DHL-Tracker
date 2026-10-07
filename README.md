@@ -1,5 +1,7 @@
 # Cyan-DHL-Tracker
 
+> **[Codes de suivi DHL](docs/codes-suivi-dhl.md)**: what each DHL tracking code means and which ones raise an alert or a Helpdesk ticket (French).
+
 Tracks DHL shipments for Cyanview's Odoo deliveries. It reads outgoing DHL pickings from Odoo, checks each tracking number against the DHL Shipment Tracking API, and writes the delivery status back to Odoo.
 
 ## Features
