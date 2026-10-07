@@ -1,63 +1,9 @@
-# Git
-.git
-.gitignore
+# Allow-list: the image only gets the runtime Python modules and the pinned requirements.
+# Everything else stays out: .env and other local secrets, virtualenvs (.venvtrack), caches,
+# tests, docs, the API reference files and the project notes.
+*
+!requirements.txt
+!*.py
 
-# Python
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-env
-pip-log.txt
-pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
-
-# Virtual environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Project specific
-logs/
-*.json
-dhl_tracking_*
-# Tests and dev tooling
-tests/
-pytest.ini
-requirements-dev.txt
-
-# DHL codes reference (generated docs, not needed at runtime)
-docs/
+# Dev-only generator of docs/dhl-tracking-codes.md
 dhl_codes_doc.py

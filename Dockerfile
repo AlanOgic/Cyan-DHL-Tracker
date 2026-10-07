@@ -1,33 +1,27 @@
-FROM python:3.11-slim
+# Pinned Python and Debian release: every rebuild gets the same base. Bump it on purpose
+# (see "Updating dependencies" in the README).
+FROM python:3.11.17-slim-trixie
 
-# Set working directory
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
+
 WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
+# Only the runtime modules (see .dockerignore). They stay owned by root:
+# the tracker can read its code, not change it.
 COPY . .
 
-# Create a non-root user
-RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin app
 USER app
 
-# Health check
-HEALTHCHECK --interval=5m --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; print('Health check passed')" || exit 1
+# Unhealthy once no hourly check has reached Odoo for too long (heartbeat.py)
+HEALTHCHECK --interval=5m --timeout=10s --start-period=15m --retries=3 \
+    CMD ["python", "heartbeat.py"]
 
-# Set Python unbuffered for immediate output
-ENV PYTHONUNBUFFERED=1
-
-# Run the automated tracker
 CMD ["python", "-u", "automated_tracker.py"]

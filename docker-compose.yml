@@ -11,9 +11,19 @@ services:
       - WEBHOOK_URL=${WEBHOOK_URL}
     env_file:
       - .env
-    volumes:
-      # Optional: Mount logs directory for persistent logging
-      - ./logs:/app/logs
+    # Hardening for a shared host: read-only filesystem, no Linux capabilities,
+    # no privilege escalation. /tmp only holds the heartbeat file (heartbeat.py).
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Measured footprint: about 25 MiB of RAM, near-zero CPU, one process
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 50
     networks:
       - dhl-tracker-network
     logging:
@@ -21,13 +31,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # Health check
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; print('Health check passed')"]
-      interval: 5m
-      timeout: 30s
-      retries: 3
-      start_period: 5s
+    # The healthcheck is defined in the Dockerfile (python heartbeat.py)
 
 networks:
   dhl-tracker-network:

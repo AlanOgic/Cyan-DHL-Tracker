@@ -1,3 +1,9 @@
-requests
-python-dotenv
-schedule
+# Pinned so every image build installs the same code (see "Updating dependencies" in the README)
+requests==2.34.2
+python-dotenv==1.2.4
+schedule==1.2.2
+# Dependencies of requests
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.20
+urllib3==2.8.0
