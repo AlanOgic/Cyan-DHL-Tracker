@@ -69,6 +69,9 @@ A picking is tracked when it has a `carrier_tracking_ref`, its carrier name cont
    HELPDESK_TEAM="Logistics & Shipping"
    HELPDESK_TAGS="Shipping Related"
    HELPDESK_SKIP_CODES=OH,MD,NH
+
+   # External monitor pinged after each successful hourly check (optional; see "Logs and health")
+   HEARTBEAT_URL=
    ```
 
    `.env` is git-ignored. Never commit it.
@@ -140,10 +143,10 @@ The shared modules (Odoo and DHL clients, alerting, Helpdesk, the DHL-to-Odoo sy
 ```bash
 pip install -r requirements-dev.txt
 pytest
-pytest --cov=odoo_json2 --cov=odoo_client --cov=dhl_client --cov=shipment_alerts --cov=odoo_helpdesk --cov=alert_dispatch --cov=shipment_sync --cov=dhl_codes_doc --cov-report=term-missing
+pytest --cov=odoo_json2 --cov=odoo_client --cov=dhl_client --cov=shipment_alerts --cov=odoo_helpdesk --cov=alert_dispatch --cov=shipment_sync --cov=dhl_codes_doc --cov=secret_url --cov=heartbeat --cov=automated_tracker --cov-report=term-missing
 ```
 
-`tests/test_automated_tracker.py` also covers the hourly check loop with fake Odoo, DHL and webhook clients.
+`tests/test_automated_tracker.py` also covers the scheduler, the hourly check loop and its failure paths with fake Odoo, DHL and webhook clients.
 
 ```bash
 pytest tests/test_automated_tracker.py
@@ -178,11 +181,32 @@ Each detailed check makes one DHL call per tracked shipment, so it uses `24 × s
 
 ### Notifications
 
-Notifications are Mattermost-formatted messages sent to `WEBHOOK_URL`. When `WEBHOOK_URL` is empty, nothing is sent and the tracker just logs `No webhook URL configured`. Odoo updates carry on as normal.
+Notifications are Mattermost-formatted messages sent to `WEBHOOK_URL`. When `WEBHOOK_URL` is empty, nothing is sent and the tracker just logs `No webhook URL configured`. Odoo updates carry on as normal. Like `ALERT_WEBHOOK_URL` and `HEARTBEAT_URL`, it must be an `https://` URL; the tracker refuses to start otherwise.
 
 ### Logs and health
 
-The tracker logs to stdout; view the logs with `docker compose logs`. Docker keeps three rotated files of up to 10 MB each. The container health check only confirms that Python and `requests` load. It does not confirm that tracking is working, so check the logs.
+The tracker logs to stdout; view the logs with `docker compose logs`. Docker keeps three rotated files of up to 10 MB each. An unexpected error in a check is logged with its traceback, and the tracker carries on with the next check.
+
+An hourly check counts as a success when it could read the shipments from Odoo and Odoo did not refuse every status write it was sent. The container turns **unhealthy** after 150 minutes without a successful check: the tracker is stuck, Odoo is unreachable, or its API key lost its rights. DHL outages and rate limits do not make it unhealthy; they show in the logs.
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' dhl-automated-tracker
+```
+
+Docker does not restart or report an unhealthy container. To be alerted, set `HEARTBEAT_URL` to an external monitor that expects a ping every hour and alerts when the pings stop:
+
+- **healthchecks.io**: create a check with a 1-hour period and a 1-hour grace time, then use its ping URL (`https://hc-ping.com/<uuid>`).
+- **Uptime Kuma**: create a *Push* monitor with a heartbeat interval of about 2 hours, then use its push URL (`https://<host>/api/push/<token>?status=up`).
+
+The tracker sends a GET to that URL after each successful hourly check. The URL holds the monitor's secret token, so the tracker never logs it.
+
+### Container hardening
+
+The image only contains the runtime Python modules (an allow-list in `.dockerignore`), owned by root and run by an unprivileged user. Compose runs the container with a read-only filesystem (`/tmp` is a 1 MB in-memory filesystem for the health file, without executables), no Linux capabilities, `no-new-privileges`, and limits of 128 MB of RAM, a quarter of a CPU and 50 processes. The tracker normally uses about 25 MB and almost no CPU.
+
+### Updating dependencies
+
+`requirements.txt` pins every runtime package, including the dependencies of `requests`, and the Dockerfile pins the Python base image (`python:3.11.17-slim-trixie`). Rebuilds are therefore identical until you change a pin. To update, bump the versions, run the tests, then rebuild with `docker compose up -d --build`.
 
 ## DHL API Documentation
 
