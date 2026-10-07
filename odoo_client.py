@@ -1,7 +1,7 @@
 """Odoo access for DHL tracking: shipment pickings, delivery status and partners.
 
-Read and write helpers log failures and return an empty result (``[]``,
-``set()``, ``None`` or ``False``) so that one failed call never stops a
+Read and write helpers log failures and return an empty result (``None``,
+``set()``, ``0`` or ``False``) so that one failed call never stops a
 tracking run.
 """
 import logging
@@ -92,8 +92,13 @@ class OdooClient:
         logger.info("Connected to Odoo as user %s", context.get("uid"))
         return True
 
-    def get_recent_shipments(self, limit: int = DEFAULT_SHIPMENT_LIMIT, since: Optional[datetime] = None) -> list:
-        """Undelivered DHL shipments, newest first, optionally only those done since ``since``."""
+    def get_recent_shipments(
+        self, limit: int = DEFAULT_SHIPMENT_LIMIT, since: Optional[datetime] = None
+    ) -> Optional[list]:
+        """Undelivered DHL shipments, newest first, optionally only those done since ``since``.
+
+        None when Odoo could not be read, so that a failure never looks like "nothing to track".
+        """
         try:
             pickings = self._transport.call(
                 PICKING_MODEL,
@@ -105,7 +110,7 @@ class OdooClient:
             )
         except OdooError as exc:
             logger.error("Error fetching shipments: %s", exc)
-            return []
+            return None
         return [_to_shipment(picking) for picking in pickings]
 
     def expire_stale_tracking(self, older_than: datetime) -> int:

@@ -103,7 +103,9 @@ def main():
     # Get recent shipments from Odoo
     print("Fetching recent shipments from Odoo...")
     shipments = odoo_client.get_recent_shipments()
-    
+
+    if shipments is None:
+        sys.exit("Could not read shipments from Odoo (see the error above).")
     if not shipments:
         print("No shipments found with DHL tracking numbers.")
         return

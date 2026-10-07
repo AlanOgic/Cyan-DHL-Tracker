@@ -18,9 +18,12 @@ from shipment_alerts import build_alert, is_recent, needs_alert, status_code_in
 class SyncResult:
     status: str
     next_steps: Optional[str]
-    delivered: bool
+    delivered: bool  # True only once Odoo has recorded the delivery
     event_code: Optional[str]
     alerted: bool
+    # Outcome of the Odoo write: None when nothing was written (DHL status unknown), False when
+    # Odoo refused it (the picking stays tracked and is written again at the next check)
+    written: Optional[bool] = None
 
 
 def _utc_now() -> datetime:
@@ -32,8 +35,9 @@ class ShipmentSync:
         self.odoo_client = odoo_client
         self.dispatcher = dispatcher
         self._clock = clock
-        # Code written per tracking number by this process: pickings sharing a tracking
-        # number are loaded with the same stale status, and must not alert twice
+        # Code handled per tracking number by this process, even when the Odoo write failed:
+        # pickings sharing a tracking number are loaded with the same stale status, and an
+        # alert already sent must not be sent twice
         self._written_codes: dict = {}
 
     def apply(self, shipment: dict, tracking_data: dict) -> SyncResult:
@@ -62,13 +66,14 @@ class ShipmentSync:
         # A delivered shipment whose alert failed stays tracked, or the alert would be lost
         close_as_delivered = delivered and not alert_failed
         if close_as_delivered:
-            self.odoo_client.update_delivery_status(tracking_number, delivered=True)
+            written = self.odoo_client.update_delivery_status(tracking_number, delivered=True)
         else:
-            self.odoo_client.update_delivery_status(
+            written = self.odoo_client.update_delivery_status(
                 tracking_number, delivered=False, current_status=status, next_steps=next_steps, event_code=marker
             )
         self._written_codes[tracking_number] = event_code if close_as_delivered else marker
-        return SyncResult(status, next_steps, close_as_delivered, event_code, alerted)
+        # A delivery Odoo did not record is not closed: the picking stays tracked and is written again
+        return SyncResult(status, next_steps, close_as_delivered and written, event_code, alerted, written=written)
 
 
 def build_from_env() -> tuple:

@@ -10,11 +10,11 @@ Settings (all optional):
 import logging
 import os
 from typing import Any, Mapping, Optional
-from urllib.parse import urlparse
 
 import requests
 
 from odoo_helpdesk import HelpdeskClient
+from secret_url import https_url_setting, request_error_name
 from shipment_alerts import ALERT_CODES, ShipmentAlert, mattermost_payload
 
 logger = logging.getLogger(__name__)
@@ -66,23 +66,12 @@ class AlertDispatcher:
                 timeout=WEBHOOK_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
-            logger.error("Mattermost alert for %s failed: %s", alert.tracking_number, exc)
+            logger.error("Mattermost alert for %s failed: %s", alert.tracking_number, request_error_name(exc))
             return False
         if response.status_code != 200:
             logger.error("Mattermost alert for %s returned HTTP %s", alert.tracking_number, response.status_code)
             return False
         return True
-
-
-def _webhook_url(environ: Mapping[str, str]) -> Optional[str]:
-    url = environ.get("ALERT_WEBHOOK_URL", "").strip()
-    if not url:
-        return None
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.netloc:
-        # The URL carries the webhook's secret key: never echo it in the error
-        raise AlertConfigError("ALERT_WEBHOOK_URL must be an https:// Mattermost incoming webhook URL")
-    return url
 
 
 def _tag_names(environ: Mapping[str, str]) -> tuple:
@@ -109,4 +98,5 @@ def _ticket_skip_codes(environ: Mapping[str, str]) -> frozenset:
 def build_alert_dispatcher(transport: Any, odoo_url: str, environ: Mapping[str, str] = os.environ) -> AlertDispatcher:
     team_name = environ.get("HELPDESK_TEAM", DEFAULT_HELPDESK_TEAM).strip()
     helpdesk = HelpdeskClient(transport, team_name, _tag_names(environ), odoo_url) if team_name else None
-    return AlertDispatcher(helpdesk, _webhook_url(environ), odoo_url, ticket_skip_codes=_ticket_skip_codes(environ))
+    webhook_url = https_url_setting(environ, "ALERT_WEBHOOK_URL", AlertConfigError)
+    return AlertDispatcher(helpdesk, webhook_url, odoo_url, ticket_skip_codes=_ticket_skip_codes(environ))

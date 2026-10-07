@@ -9,19 +9,30 @@ from dotenv import load_dotenv
 
 from alert_dispatch import AlertConfigError
 from dhl_client import DHLConfigError, DHLTracker
+from heartbeat import HeartbeatConfigError
+from heartbeat import build_from_env as build_heartbeat_from_env
 from odoo_json2 import OdooConfigError
+from secret_url import https_url_setting, request_error_name
 from shipment_sync import build_from_env
 
 # Load environment variables
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 TRACKING_WINDOW_DAYS = 90
 MAX_TRACKED_SHIPMENTS = 100
 MAX_DELIVERED_PRELOAD = 1000
+SIMPLE_CHECK_MINUTES = 10
+SCHEDULER_POLL_SECONDS = 60
+
+class WebhookConfigError(ValueError):
+    """Raised when WEBHOOK_URL is invalid."""
+
 
 class WebhookSender:
     def __init__(self):
-        self.webhook_url = os.getenv('WEBHOOK_URL')
+        self.webhook_url = https_url_setting(os.environ, 'WEBHOOK_URL', WebhookConfigError)
     
     def format_mattermost_message(self, data, is_startup=False):
         """
@@ -113,11 +124,11 @@ class WebhookSender:
                 print(f"[{datetime.now()}] Mattermost webhook sent successfully")
                 return True
             else:
-                print(f"[{datetime.now()}] Webhook failed with status {response.status_code}: {response.text}")
+                print(f"[{datetime.now()}] Webhook failed with status {response.status_code}")
                 return False
-                
-        except Exception as e:
-            print(f"[{datetime.now()}] Error sending webhook: {str(e)}")
+
+        except requests.RequestException as e:
+            print(f"[{datetime.now()}] Error sending webhook: {request_error_name(e)}")
             return False
     
     def send_webhook_simple(self, data):
@@ -154,8 +165,8 @@ class WebhookSender:
             
             return response.status_code == 200
             
-        except Exception as e:
-            print(f"[{datetime.now()}] Error sending simple webhook: {str(e)}")
+        except requests.RequestException as e:
+            print(f"[{datetime.now()}] Error sending simple webhook: {request_error_name(e)}")
             return False
     
     def send_webhook_detailed_report(self, data):
@@ -206,18 +217,19 @@ class WebhookSender:
                 print(f"[{datetime.now()}] Detailed report webhook failed")
                 return False
                 
-        except Exception as e:
-            print(f"[{datetime.now()}] Error sending detailed report webhook: {str(e)}")
+        except requests.RequestException as e:
+            print(f"[{datetime.now()}] Error sending detailed report webhook: {request_error_name(e)}")
             return False
 
 class AutomatedTracker:
-    def __init__(self, odoo_client=None, dhl_tracker=None, webhook_sender=None, shipment_sync=None):
+    def __init__(self, odoo_client=None, dhl_tracker=None, webhook_sender=None, shipment_sync=None, heartbeat=None):
         """Clients default to the environment's settings; pass them to replace (e.g. in tests)."""
         self.odoo_client, self.shipment_sync = (
             (odoo_client, shipment_sync) if shipment_sync is not None else build_from_env()
         )
         self.dhl_tracker = dhl_tracker or DHLTracker()
         self.webhook_sender = webhook_sender or WebhookSender()
+        self.heartbeat = heartbeat or build_heartbeat_from_env()
         self.last_delivered_shipments = set()
         self.last_check_results = {}  # Store last check results for comparison
     
@@ -258,6 +270,9 @@ class AutomatedTracker:
         
         # Get shipments count only
         shipments = self._fetch_tracked_shipments()
+        if shipments is None:
+            print(f"[{datetime.now()}] Could not read shipments from Odoo, skipping simple check")
+            return
         current_count = len(shipments)
         
         # Check if count changed
@@ -300,17 +315,23 @@ class AutomatedTracker:
         
         # Get shipments from Odoo
         shipments = self._fetch_tracked_shipments()
-        
+
+        if shipments is None:
+            print(f"[{datetime.now()}] Could not read shipments from Odoo, skipping hourly check")
+            return
+
         if not shipments:
             print(f"[{datetime.now()}] No shipments found")
+            self.heartbeat.record_success()
             return
-        
+
         print(f"[{datetime.now()}] Processing {len(shipments)} shipments for hourly report...")
-        
+
         in_transit_shipments = []
         newly_delivered_shipments = []
         shipments_with_next_steps = []
         postponed = 0
+        write_outcomes = []
         
         for index, shipment in enumerate(shipments):
             tracking_number = shipment['tracking_number']
@@ -332,6 +353,9 @@ class AutomatedTracker:
             
             # Update Odoo (and alert on a new action code)
             result = self.shipment_sync.apply(shipment, tracking_data)
+            write_outcomes.append(result.written)
+            if result.written is False:
+                print(f"[{datetime.now()}] {tracking_number} - Odoo did not record the DHL status, retried at the next check")
             status_description, next_steps = result.status, result.next_steps
             if result.alerted:
                 print(f"[{datetime.now()}] {tracking_number} - ALERT [{result.event_code}] raised for {shipment['partner_name']}")
@@ -383,7 +407,19 @@ class AutomatedTracker:
             self.send_detailed_next_steps_report(shipments_with_next_steps)
         
         print(f"[{datetime.now()}] Hourly check completed - {len(in_transit_shipments)} in transit, {len(newly_delivered_shipments)} newly delivered, {postponed} postponed")
-    
+        self._record_hourly_outcome(write_outcomes)
+
+    def _record_hourly_outcome(self, write_outcomes):
+        """The check counts as a success unless Odoo refused every write it got (e.g. a user without write access).
+
+        Shipments with nothing to write (DHL status unknown) are left out, so they cannot hide refused writes.
+        """
+        attempted = [written for written in write_outcomes if written is not None]
+        if attempted and not any(attempted):
+            print(f"[{datetime.now()}] Odoo refused all {len(attempted)} status writes: this check does not count as a success")
+            return
+        self.heartbeat.record_success()
+
     def send_detailed_next_steps_report(self, shipments_with_next_steps):
         """
         Send detailed report for shipments that have next steps
@@ -402,27 +438,34 @@ class AutomatedTracker:
         print(f"[{datetime.now()}] Sending startup notification...")
         
         # Get initial shipment count (connection should already be established)
+        shipments = self._fetch_tracked_shipments()
+        if shipments is None:
+            print(f"[{datetime.now()}] Could not read shipments from Odoo, no startup notification")
+            return
+        delivered_count = len(self.last_delivered_shipments)
+        in_transit_count = len(shipments)
+
+        startup_data = {
+            'timestamp': datetime.now().isoformat(),
+            'summary': {
+                'total_shipments': in_transit_count + delivered_count,
+                'in_transit': in_transit_count,
+                'newly_delivered': 0
+            },
+            'in_transit_shipments': [],
+            'newly_delivered_shipments': []
+        }
+
+        self.webhook_sender.send_webhook(startup_data, is_startup=True)
+
+    def _run_safely(self, check):
+        """Run one step of the tracker. An unexpected error is logged with its traceback and the
+        scheduler carries on: a crash would restart the container straight into a full DHL pass."""
         try:
-            shipments = self._fetch_tracked_shipments()
-            delivered_count = len(self.last_delivered_shipments)
-            in_transit_count = len(shipments)
-            
-            startup_data = {
-                'timestamp': datetime.now().isoformat(),
-                'summary': {
-                    'total_shipments': in_transit_count + delivered_count,
-                    'in_transit': in_transit_count,
-                    'newly_delivered': 0
-                },
-                'in_transit_shipments': [],
-                'newly_delivered_shipments': []
-            }
-            
-            self.webhook_sender.send_webhook(startup_data, is_startup=True)
-            
-        except Exception as e:
-            print(f"[{datetime.now()}] Error sending startup notification: {str(e)}")
-    
+            check()
+        except Exception:
+            logger.exception("%s failed; the tracker carries on with the next check", check.__name__)
+
     def start_scheduler(self):
         """
         Start the multi-level scheduler:
@@ -431,27 +474,27 @@ class AutomatedTracker:
         """
         print(f"[{datetime.now()}] Starting automated DHL tracker...")
         print(f"[{datetime.now()}] Schedule:")
-        print(f"[{datetime.now()}] - Simple checks: every 10 minutes")
+        print(f"[{datetime.now()}] - Simple checks: every {SIMPLE_CHECK_MINUTES} minutes")
         print(f"[{datetime.now()}] - Detailed checks: every hour")
         print(f"[{datetime.now()}] - Next steps reports: after each hourly check")
-        
+
         # Load already delivered shipments to avoid retracking
-        self.load_delivered_shipments()
-        
+        self._run_safely(self.load_delivered_shipments)
+
         # Send startup notification
-        self.send_startup_notification()
-        
+        self._run_safely(self.send_startup_notification)
+
         # Schedule different types of checks
-        schedule.every(10).minutes.do(self.simple_check)
-        schedule.every().hour.do(self.hourly_detailed_check)
-        
+        schedule.every(SIMPLE_CHECK_MINUTES).minutes.do(self._run_safely, self.simple_check)
+        schedule.every().hour.do(self._run_safely, self.hourly_detailed_check)
+
         # Run initial detailed check immediately
-        self.hourly_detailed_check()
-        
+        self._run_safely(self.hourly_detailed_check)
+
         # Keep the scheduler running
         while True:
             schedule.run_pending()
-            time.sleep(60)  # Check every minute
+            time.sleep(SCHEDULER_POLL_SECONDS)
 
 def main():
     print(r"""
@@ -467,15 +510,17 @@ AUTOMATED TRACKER - by Alan, for Cyanview
 
     try:
         tracker = AutomatedTracker()
-    except (OdooConfigError, DHLConfigError, AlertConfigError) as e:
+    except (OdooConfigError, DHLConfigError, AlertConfigError, WebhookConfigError, HeartbeatConfigError) as e:
         raise SystemExit(f"[{datetime.now()}] Invalid configuration: {e}")
 
     try:
         tracker.start_scheduler()
     except KeyboardInterrupt:
         print(f"\n[{datetime.now()}] Automated tracker stopped by user")
-    except Exception as e:
-        print(f"\n[{datetime.now()}] Error in automated tracker: {str(e)}")
+    except Exception:
+        # A non-zero exit shows the failure in `docker ps`; the restart policy starts the tracker again
+        logger.exception("Automated tracker stopped on an unexpected error")
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()

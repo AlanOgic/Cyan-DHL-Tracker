@@ -159,10 +159,11 @@ def test_expire_stale_tracking_returns_zero_on_error():
     assert client.expire_stale_tracking(older_than=datetime(2026, 7, 8)) == 0
 
 
-def test_get_recent_shipments_returns_empty_list_on_error():
+def test_get_recent_shipments_returns_none_on_error():
+    # None, not []: an Odoo failure must not look like "no shipment to track"
     client, _ = make_client(error=OdooError("boom"))
 
-    assert client.get_recent_shipments() == []
+    assert client.get_recent_shipments() is None
 
 
 # --- get_delivered_tracking_refs --------------------------------------------

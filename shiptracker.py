@@ -154,9 +154,9 @@ def main():
             print(f"\n[*] Tracking shipment {tracking_number}...")
             tracking_data = dhl_tracker.track_shipment(tracking_number)
             
-            # Try to find partner info
+            # Try to find partner info (best effort: an Odoo error is already logged)
             partner_info = None
-            shipments = odoo_client.get_recent_shipments(limit=100)
+            shipments = odoo_client.get_recent_shipments(limit=100) or []
             for shipment in shipments:
                 if shipment['tracking_number'] == tracking_number:
                     partner_info = odoo_client.get_partner_info(partner_id=shipment['partner_id'])
@@ -172,8 +172,10 @@ def main():
             
             print(f"\n[*] Fetching {limit} recent shipments from Odoo...")
             shipments = odoo_client.get_recent_shipments(limit=limit)
-            
-            if not shipments:
+
+            if shipments is None:
+                print("[-] Could not read shipments from Odoo (see the error above).")
+            elif not shipments:
                 print("[-] No shipments found with tracking numbers.")
             else:
                 print(f"\n[+] Found {len(shipments)} shipments with tracking numbers.")
@@ -268,7 +270,7 @@ def main():
                 print("=" * 50)
                 
                 # Show recent shipments for this partner
-                shipments = odoo_client.get_recent_shipments(limit=100)
+                shipments = odoo_client.get_recent_shipments(limit=100) or []
                 partner_shipments = [s for s in shipments if s['partner_id'] == partner_info['id']]
                 
                 if partner_shipments:

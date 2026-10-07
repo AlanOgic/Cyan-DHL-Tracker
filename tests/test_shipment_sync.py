@@ -25,7 +25,8 @@ def dhl_data(status_code, description, code=None, next_steps=None):
 
 
 class FakeOdoo:
-    def __init__(self):
+    def __init__(self, write_ok=True):
+        self.write_ok = write_ok
         self.updates = []
 
     def update_delivery_status(self, tracking_number, delivered=True, current_status=None, next_steps=None, event_code=None):
@@ -33,7 +34,7 @@ class FakeOdoo:
             "tracking_number": tracking_number, "delivered": delivered,
             "current_status": current_status, "next_steps": next_steps, "event_code": event_code,
         })
-        return True
+        return self.write_ok
 
 
 class FakeDispatcher:
@@ -49,8 +50,8 @@ class FakeDispatcher:
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 
 
-def make_sync(dispatcher_succeeds=True, now=NOW):
-    odoo, dispatcher = FakeOdoo(), FakeDispatcher(dispatcher_succeeds)
+def make_sync(dispatcher_succeeds=True, now=NOW, write_ok=True):
+    odoo, dispatcher = FakeOdoo(write_ok), FakeDispatcher(dispatcher_succeeds)
     return ShipmentSync(odoo, dispatcher, clock=lambda: now), odoo, dispatcher
 
 
@@ -60,6 +61,7 @@ def test_delivered_shipment_is_flagged():
     result = sync.apply(SHIPMENT, dhl_data("delivered", "Delivered", code="OK"))
 
     assert result.delivered is True
+    assert result.written is True
     assert odoo.updates == [{"tracking_number": "1000000001", "delivered": True,
                              "current_status": None, "next_steps": None, "event_code": None}]
     assert dispatcher.alerts == []
@@ -143,7 +145,36 @@ def test_transient_dhl_errors_keep_the_last_known_odoo_status(status_code):
 
     assert odoo.updates == []
     assert result.delivered is False
+    assert result.written is None  # nothing written, which is not a refused write
     assert dispatcher.alerts == []
+
+
+def test_failed_odoo_write_keeps_a_delivered_shipment_tracked():
+    sync, odoo, _ = make_sync(write_ok=False)
+
+    result = sync.apply(SHIPMENT, dhl_data("delivered", "Delivered", code="OK"))
+
+    assert odoo.updates[0]["delivered"] is True
+    assert result.delivered is False
+    assert result.written is False
+
+
+def test_failed_odoo_write_of_a_status_is_reported():
+    sync, _, _ = make_sync(write_ok=False)
+
+    result = sync.apply(SHIPMENT, dhl_data("transit", "Processed", code="PL"))
+
+    assert result.written is False
+
+
+def test_alert_sent_before_a_failed_odoo_write_is_not_repeated():
+    sync, _, dispatcher = make_sync(write_ok=False)
+    data = dhl_data("transit", "On hold for payment", code="HP")
+
+    sync.apply(SHIPMENT, data)
+    sync.apply(SHIPMENT, data)
+
+    assert len(dispatcher.alerts) == 1
 
 
 def test_dhl_error_never_replaces_a_known_status():

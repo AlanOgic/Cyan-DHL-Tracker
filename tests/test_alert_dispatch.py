@@ -97,6 +97,18 @@ def test_dispatch_fails_when_mattermost_rejects_or_is_unreachable(session):
     assert AlertDispatcher(None, WEBHOOK, ODOO_URL, session=session).dispatch(ALERT) is False
 
 
+def test_unreachable_mattermost_is_logged_without_the_webhook_key(caplog):
+    # requests quotes the URL path in its errors, and a Mattermost webhook path is its secret key
+    error = requests.ConnectionError(
+        "HTTPSConnectionPool(host='chat.example.com', port=443): Max retries exceeded with url: /hooks/abc"
+    )
+
+    AlertDispatcher(None, WEBHOOK, ODOO_URL, session=FakeSession(error=error)).dispatch(ALERT)
+
+    assert "ConnectionError" in caplog.text
+    assert "/hooks/abc" not in caplog.text
+
+
 def alert_with_code(code):
     return build_alert(
         {"tracking_number": "1", "shipment_ref": "SH1", "picking_id": 1, "partner_id": 7, "partner_name": "Acme",
