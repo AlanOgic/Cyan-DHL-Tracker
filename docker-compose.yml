@@ -1,38 +1,74 @@
+# Hardening shared by both containers for a shared host: read-only filesystem, no Linux
+# capabilities, no privilege escalation, rotated logs.
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   dhl-tracker:
+    <<: *hardening
     build: .
     container_name: dhl-automated-tracker
-    restart: unless-stopped
     environment:
       - DHL_API_KEY=${DHL_API_KEY}
       - ODOO_URL=${ODOO_URL}
       - ODOO_DB=${ODOO_DB}
       - ODOO_API_KEY=${ODOO_API_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL}
+      # Every outgoing HTTPS call goes through the egress proxy (requests reads this variable);
+      # the tracker makes no plain-HTTP call, and the proxy refuses them
+      - HTTPS_PROXY=http://egress-proxy:8888
     env_file:
       - .env
-    # Hardening for a shared host: read-only filesystem, no Linux capabilities,
-    # no privilege escalation. /tmp only holds the heartbeat file (heartbeat.py).
-    read_only: true
+    # /tmp only holds the heartbeat file (heartbeat.py)
     tmpfs:
       - /tmp:size=1m,noexec,nosuid,nodev
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     # Measured footprint: about 25 MiB of RAM, near-zero CPU, one process
     mem_limit: 128m
     cpus: 0.25
     pids_limit: 50
+    # No route to the internet, the host or other containers: only to the egress proxy
     networks:
-      - dhl-tracker-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - tracker-internal
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
     # The healthcheck is defined in the Dockerfile (python heartbeat.py)
 
+  egress-proxy:
+    <<: *hardening
+    build: ./proxy
+    container_name: dhl-tracker-egress-proxy
+    environment:
+      # Exact host names the tracker may reach over HTTPS: DHL, Odoo, Mattermost, the monitor
+      - EGRESS_ALLOWED_HOSTS=${EGRESS_ALLOWED_HOSTS:?set EGRESS_ALLOWED_HOSTS in .env}
+    # /tmp only holds the allow-list built at startup (proxy/entrypoint.sh)
+    tmpfs:
+      - /tmp:size=64k,noexec,nosuid,nodev
+    mem_limit: 32m
+    cpus: 0.1
+    pids_limit: 30
+    networks:
+      - tracker-internal
+      - tracker-egress
+    # The healthcheck is defined in proxy/Dockerfile
+
 networks:
-  dhl-tracker-network:
+  # Internal: containers on it cannot reach anything outside it. Isolated gateway: the bridge
+  # gets no address on the host, so host services listening on 0.0.0.0 are out of reach too
+  tracker-internal:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+  # The proxy's way out; nothing else is attached to it
+  tracker-egress:
     driver: bridge
