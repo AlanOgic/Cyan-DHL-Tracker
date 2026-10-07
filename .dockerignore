@@ -57,3 +57,7 @@ dhl_tracking_*
 tests/
 pytest.ini
 requirements-dev.txt
+
+# DHL codes reference (generated docs, not needed at runtime)
+docs/
+dhl_codes_doc.py

@@ -129,7 +129,7 @@ An alert then:
 
 An alert counts as sent as soon as one channel received it. If every channel fails, the code is not recorded and the alert is retried at the next check. A delivered shipment whose alert failed (for example DD, delivered damaged) stays tracked until the alert gets through.
 
-A shareable reference of every code, with what each one means, is published as the "Codes de suivi DHL" page.
+A reference of every code, with what each one means and what the tracker does with it, is in [docs/codes-suivi-dhl.md](docs/codes-suivi-dhl.md) (French). `dhl_codes_doc.py` generates it from the tracker's own code, so the alert, ticket and priority columns always match what the tracker does. After changing the alert codes, families or skip codes, run `python dhl_codes_doc.py`; `tests/test_dhl_codes_doc.py` fails while the page is out of date.
 
 ## Tests
 
@@ -138,7 +138,7 @@ The shared modules (Odoo and DHL clients, alerting, Helpdesk, the DHL-to-Odoo sy
 ```bash
 pip install -r requirements-dev.txt
 pytest
-pytest --cov=odoo_json2 --cov=odoo_client --cov=dhl_client --cov=shipment_alerts --cov=odoo_helpdesk --cov=alert_dispatch --cov=shipment_sync --cov-report=term-missing
+pytest --cov=odoo_json2 --cov=odoo_client --cov=dhl_client --cov=shipment_alerts --cov=odoo_helpdesk --cov=alert_dispatch --cov=shipment_sync --cov=dhl_codes_doc --cov-report=term-missing
 ```
 
 `tests/test_automated_tracker.py` also covers the hourly check loop with fake Odoo, DHL and webhook clients.
