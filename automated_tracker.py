@@ -1,221 +1,23 @@
 #!/usr/bin/env python3
 import os
-import json
+import logging
 import requests
-import xmlrpc.client
 import time
-import ssl
 import schedule
-import threading
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
+from alert_dispatch import AlertConfigError
+from dhl_client import DHLConfigError, DHLTracker
+from odoo_json2 import OdooConfigError
+from shipment_sync import build_from_env
 
 # Load environment variables
 load_dotenv()
 
-class OdooClient:
-    def __init__(self):
-        self.url = os.getenv('ODOO_URL')
-        self.db = os.getenv('ODOO_DB')
-        self.username = os.getenv('ODOO_USERNAME')
-        self.password = os.getenv('ODOO_PASSWORD')
-        self.common = None
-        self.uid = None
-        self.models = None
-    
-    def connect(self):
-        """Connect to the Odoo instance"""
-        print(f"[{datetime.now()}] Connecting to Odoo...")
-        print(f"[{datetime.now()}] URL: {self.url}")
-        print(f"[{datetime.now()}] DB: {self.db}")
-        print(f"[{datetime.now()}] Username: {self.username}")
-        
-        try:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            
-            print(f"[{datetime.now()}] Creating common proxy...")
-            self.common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common', context=context)
-            
-            print(f"[{datetime.now()}] Authenticating...")
-            self.uid = self.common.authenticate(self.db, self.username, self.password, {})
-            
-            if not self.uid:
-                print(f"[{datetime.now()}] Authentication failed - invalid credentials")
-                return False
-            
-            print(f"[{datetime.now()}] Creating models proxy...")
-            self.models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object', context=context)
-            
-            print(f"[{datetime.now()}] Connection successful! User ID: {self.uid}")
-            return True
-        except Exception as e:
-            print(f"[{datetime.now()}] Connection failed: {str(e)}")
-            return False
-    
-    def get_recent_shipments(self, limit=100):
-        """
-        Fetches recent shipments with tracking numbers from Odoo.
-        Only includes shipments from the last 3 months.
-        """
-        try:
-            # Calculate date 3 months ago
-            three_months_ago = datetime.now() - timedelta(days=90)
-            date_filter = three_months_ago.strftime('%Y-%m-%d %H:%M:%S')
-            
-            print(f"[{datetime.now()}] Filtering shipments newer than: {date_filter}")
-            
-            shipments = self.models.execute_kw(
-                self.db, self.uid, self.password,
-                'stock.picking', 'search_read',
-                [
-                    [
-                        ('carrier_tracking_ref', '!=', False),
-                        ('carrier_id.name', 'ilike', 'DHL'),
-                        ('state', '=', 'done'),
-                        ('x_studio_delivered_', '=', False),
-                        ('date_done', '>=', date_filter)  # Only shipments from last 3 months
-                    ]
-                ],
-                {
-                    'fields': ['carrier_tracking_ref', 'partner_id', 'name', 'date_done'],
-                    'limit': limit,
-                    'order': 'date_done desc'
-                }
-            )
-            
-            result = []
-            for shipment in shipments:
-                tracking_number = shipment['carrier_tracking_ref']
-                partner_id = shipment['partner_id'][0] if isinstance(shipment['partner_id'], list) else shipment['partner_id']
-                partner_name = shipment['partner_id'][1] if isinstance(shipment['partner_id'], list) else "Unknown"
-                
-                result.append({
-                    'tracking_number': tracking_number,
-                    'partner_id': partner_id,
-                    'partner_name': partner_name,
-                    'shipment_ref': shipment['name'],
-                    'date_done': shipment['date_done']
-                })
-            
-            return result
-        except Exception as e:
-            print(f"[{datetime.now()}] Error fetching shipments: {str(e)}")
-            return []
-    
-    def update_delivery_status(self, tracking_number, delivered=True, current_status=None, next_steps=None):
-        """
-        Updates the delivery status in Odoo stock.picking model.
-        """
-        try:
-            picking_ids = self.models.execute_kw(
-                self.db, self.uid, self.password,
-                'stock.picking', 'search',
-                [
-                    [
-                        ('carrier_tracking_ref', '=', tracking_number),
-                        ('carrier_id.name', 'ilike', 'DHL')
-                    ]
-                ]
-            )
-            
-            if not picking_ids:
-                return False
-            
-            if delivered:
-                update_result = self.models.execute_kw(
-                    self.db, self.uid, self.password,
-                    'stock.picking', 'write',
-                    [picking_ids, {'x_studio_delivered_': True, 'x_studio_last_status': ''}]
-                )
-            else:
-                status_lines = []
-                if current_status:
-                    status_lines.append(f"Status: {current_status}")
-                if next_steps:
-                    status_lines.append(f"Next Steps: {next_steps}")
-                status_text = "\n".join(status_lines)
-                
-                update_result = self.models.execute_kw(
-                    self.db, self.uid, self.password,
-                    'stock.picking', 'write',
-                    [picking_ids, {'x_studio_last_status': status_text}]
-                )
-            
-            return update_result
-                
-        except Exception as e:
-            print(f"[{datetime.now()}] Error updating delivery status for {tracking_number}: {str(e)}")
-            return False
-
-class DHLTracker:
-    def __init__(self):
-        self.api_key = os.getenv('DHL_API_KEY')
-        self.base_url = "https://api-eu.dhl.com/track/shipments"
-    
-    def track_shipment(self, tracking_number):
-        """
-        Tracks a DHL shipment using the DHL Tracking API.
-        """
-        headers = {
-            "DHL-API-Key": self.api_key,
-            "Accept": "application/json"
-        }
-        
-        params = {
-            "trackingNumber": tracking_number
-        }
-        
-        try:
-            response = requests.get(self.base_url, headers=headers, params=params)
-            time.sleep(2)  # Rate limiting
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {
-                    "error": True,
-                    "status_code": response.status_code,
-                    "message": response.text
-                }
-        except Exception as e:
-            return {
-                "error": True,
-                "message": str(e)
-            }
-    
-    def get_shipment_status(self, tracking_number):
-        """
-        Get current status of a shipment.
-        Returns: (status_description, next_steps, is_delivered)
-        """
-        tracking_data = self.track_shipment(tracking_number)
-        
-        if tracking_data.get("error"):
-            status_code = tracking_data.get("status_code")
-            if status_code == 404:
-                return ("Not Found", None, False)
-            elif status_code == 401:
-                return ("Auth Error", None, False)
-            elif status_code == 429:
-                return ("Rate Limited", None, False)
-            else:
-                return (f"Error {status_code}", None, False)
-        
-        if "shipments" in tracking_data and tracking_data["shipments"]:
-            shipment = tracking_data["shipments"][0]
-            if "status" in shipment:
-                status_info = shipment["status"]
-                
-                description = status_info.get("description", status_info.get("status", "Unknown"))
-                status_code = status_info.get("statusCode", "").lower()
-                is_delivered = "delivered" in description.lower() or status_code in ["delivered", "ok"]
-                next_steps = None if is_delivered else status_info.get("nextSteps")
-                
-                return (description, next_steps, is_delivered)
-        
-        return ("No data", None, False)
+TRACKING_WINDOW_DAYS = 90
+MAX_TRACKED_SHIPMENTS = 100
+MAX_DELIVERED_PRELOAD = 1000
 
 class WebhookSender:
     def __init__(self):
@@ -236,7 +38,10 @@ class WebhookSender:
         message += f"**Summary:**\n"
         message += f"• Total shipments: {summary.get('total_shipments', 0)}\n"
         message += f"• In transit: {summary.get('in_transit', 0)}\n"
-        message += f"• Newly delivered: {summary.get('newly_delivered', 0)}\n\n"
+        message += f"• Newly delivered: {summary.get('newly_delivered', 0)}\n"
+        if summary.get('postponed'):
+            message += f"• Postponed (DHL rate limit): {summary['postponed']}\n"
+        message += "\n"
         
         # Newly delivered section
         newly_delivered = data.get('newly_delivered_shipments', [])
@@ -406,10 +211,13 @@ class WebhookSender:
             return False
 
 class AutomatedTracker:
-    def __init__(self):
-        self.odoo_client = OdooClient()
-        self.dhl_tracker = DHLTracker()
-        self.webhook_sender = WebhookSender()
+    def __init__(self, odoo_client=None, dhl_tracker=None, webhook_sender=None, shipment_sync=None):
+        """Clients default to the environment's settings; pass them to replace (e.g. in tests)."""
+        self.odoo_client, self.shipment_sync = (
+            (odoo_client, shipment_sync) if shipment_sync is not None else build_from_env()
+        )
+        self.dhl_tracker = dhl_tracker or DHLTracker()
+        self.webhook_sender = webhook_sender or WebhookSender()
         self.last_delivered_shipments = set()
         self.last_check_results = {}  # Store last check results for comparison
     
@@ -422,41 +230,22 @@ class AutomatedTracker:
         if not self.odoo_client.connect():
             print(f"[{datetime.now()}] Failed to connect to Odoo for loading delivered shipments")
             return
-        
-        try:
-            # Calculate date 3 months ago
-            three_months_ago = datetime.now() - timedelta(days=90)
-            date_filter = three_months_ago.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Get delivered shipments from last 3 months
-            delivered_shipments = self.odoo_client.models.execute_kw(
-                self.odoo_client.db, self.odoo_client.uid, self.odoo_client.password,
-                'stock.picking', 'search_read',
-                [
-                    [
-                        ('carrier_tracking_ref', '!=', False),
-                        ('carrier_id.name', 'ilike', 'DHL'),
-                        ('state', '=', 'done'),
-                        ('x_studio_delivered_', '=', True),  # Already delivered
-                        ('date_done', '>=', date_filter)
-                    ]
-                ],
-                {
-                    'fields': ['carrier_tracking_ref'],
-                    'limit': 1000
-                }
-            )
-            
-            # Add to our delivered set
-            for shipment in delivered_shipments:
-                tracking_number = shipment['carrier_tracking_ref']
-                self.last_delivered_shipments.add(tracking_number)
-            
-            print(f"[{datetime.now()}] Loaded {len(delivered_shipments)} already delivered shipments")
-            
-        except Exception as e:
-            print(f"[{datetime.now()}] Error loading delivered shipments: {str(e)}")
-        
+
+        delivered_refs = self.odoo_client.get_delivered_tracking_refs(
+            limit=MAX_DELIVERED_PRELOAD, since=self._tracking_window_start()
+        )
+        self.last_delivered_shipments = self.last_delivered_shipments | delivered_refs
+        print(f"[{datetime.now()}] Loaded {len(delivered_refs)} already delivered shipments")
+
+    def _tracking_window_start(self):
+        """Only shipments done within the tracking window are followed."""
+        return datetime.now() - timedelta(days=TRACKING_WINDOW_DAYS)
+
+    def _fetch_tracked_shipments(self):
+        return self.odoo_client.get_recent_shipments(
+            limit=MAX_TRACKED_SHIPMENTS, since=self._tracking_window_start()
+        )
+
     def simple_check(self):
         """
         Simple 10-minute check - only sends notification if no changes
@@ -468,7 +257,7 @@ class AutomatedTracker:
             return
         
         # Get shipments count only
-        shipments = self.odoo_client.get_recent_shipments()
+        shipments = self._fetch_tracked_shipments()
         current_count = len(shipments)
         
         # Check if count changed
@@ -504,8 +293,13 @@ class AutomatedTracker:
             print(f"[{datetime.now()}] Failed to connect to Odoo, skipping hourly check")
             return
         
+        # Undelivered pickings past the window can no longer be tracked reliably
+        expired = self.odoo_client.expire_stale_tracking(older_than=self._tracking_window_start())
+        if expired:
+            print(f"[{datetime.now()}] Tracking expired for {expired} DHL shipment(s) older than {TRACKING_WINDOW_DAYS} days")
+        
         # Get shipments from Odoo
-        shipments = self.odoo_client.get_recent_shipments()
+        shipments = self._fetch_tracked_shipments()
         
         if not shipments:
             print(f"[{datetime.now()}] No shipments found")
@@ -516,8 +310,9 @@ class AutomatedTracker:
         in_transit_shipments = []
         newly_delivered_shipments = []
         shipments_with_next_steps = []
+        postponed = 0
         
-        for shipment in shipments:
+        for index, shipment in enumerate(shipments):
             tracking_number = shipment['tracking_number']
             
             # Check if already delivered in our tracking system
@@ -527,7 +322,19 @@ class AutomatedTracker:
             
             # Get status from DHL
             print(f"[{datetime.now()}] Tracking {tracking_number}...")
-            status_description, next_steps, is_delivered = self.dhl_tracker.get_shipment_status(tracking_number)
+            tracking_data = self.dhl_tracker.track_reference(tracking_number)
+            
+            # DHL keeps refusing calls: keep the last known Odoo status and retry at the next check
+            if self.dhl_tracker.rate_limited:
+                postponed = len(shipments) - index
+                print(f"[{datetime.now()}] DHL rate limit reached - {postponed} shipment(s) postponed to the next check")
+                break
+            
+            # Update Odoo (and alert on a new action code)
+            result = self.shipment_sync.apply(shipment, tracking_data)
+            status_description, next_steps = result.status, result.next_steps
+            if result.alerted:
+                print(f"[{datetime.now()}] {tracking_number} - ALERT [{result.event_code}] raised for {shipment['partner_name']}")
             
             shipment_data = {
                 'tracking_number': tracking_number,
@@ -536,25 +343,17 @@ class AutomatedTracker:
                 'shipment_ref': shipment['shipment_ref'],
                 'status': status_description,
                 'next_steps': next_steps,
-                'is_delivered': is_delivered,
+                'is_delivered': result.delivered,
                 'timestamp': datetime.now().isoformat()
             }
             
-            # Update Odoo and handle delivery status
-            if is_delivered:
-                # Update Odoo to mark as delivered
-                self.odoo_client.update_delivery_status(tracking_number, delivered=True)
-                
+            if result.delivered:
                 # Add to newly delivered list
                 newly_delivered_shipments.append(shipment_data)
                 self.last_delivered_shipments.add(tracking_number)
                 print(f"[{datetime.now()}] {tracking_number} - NEWLY DELIVERED for {shipment['partner_name']}")
                 
             else:
-                # Update status for non-delivered shipments
-                self.odoo_client.update_delivery_status(tracking_number, delivered=False,
-                                                      current_status=status_description, 
-                                                      next_steps=next_steps)
                 in_transit_shipments.append(shipment_data)
                 
                 # Check if it has next steps for detailed report
@@ -562,9 +361,6 @@ class AutomatedTracker:
                     shipments_with_next_steps.append(shipment_data)
                 
                 print(f"[{datetime.now()}] {tracking_number} - IN TRANSIT: {status_description}")
-            
-            # Rate limiting
-            time.sleep(1)
         
         # Send hourly detailed webhook
         webhook_data = {
@@ -572,7 +368,8 @@ class AutomatedTracker:
             'summary': {
                 'total_shipments': len(shipments),
                 'in_transit': len(in_transit_shipments),
-                'newly_delivered': len(newly_delivered_shipments)
+                'newly_delivered': len(newly_delivered_shipments),
+                'postponed': postponed
             },
             'in_transit_shipments': in_transit_shipments,
             'newly_delivered_shipments': newly_delivered_shipments
@@ -585,7 +382,7 @@ class AutomatedTracker:
             print(f"[{datetime.now()}] Sending detailed report for {len(shipments_with_next_steps)} shipments with next steps")
             self.send_detailed_next_steps_report(shipments_with_next_steps)
         
-        print(f"[{datetime.now()}] Hourly check completed - {len(in_transit_shipments)} in transit, {len(newly_delivered_shipments)} newly delivered")
+        print(f"[{datetime.now()}] Hourly check completed - {len(in_transit_shipments)} in transit, {len(newly_delivered_shipments)} newly delivered, {postponed} postponed")
     
     def send_detailed_next_steps_report(self, shipments_with_next_steps):
         """
@@ -606,7 +403,7 @@ class AutomatedTracker:
         
         # Get initial shipment count (connection should already be established)
         try:
-            shipments = self.odoo_client.get_recent_shipments()
+            shipments = self._fetch_tracked_shipments()
             delivered_count = len(self.last_delivered_shipments)
             in_transit_count = len(shipments)
             
@@ -666,9 +463,13 @@ def main():
       |___/                                                
 AUTOMATED TRACKER - by Alan, for Cyanview
 """)
-    
-    tracker = AutomatedTracker()
-    
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
+
+    try:
+        tracker = AutomatedTracker()
+    except (OdooConfigError, DHLConfigError, AlertConfigError) as e:
+        raise SystemExit(f"[{datetime.now()}] Invalid configuration: {e}")
+
     try:
         tracker.start_scheduler()
     except KeyboardInterrupt:

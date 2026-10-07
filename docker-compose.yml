@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   dhl-tracker:
     build: .
@@ -9,8 +7,7 @@ services:
       - DHL_API_KEY=${DHL_API_KEY}
       - ODOO_URL=${ODOO_URL}
       - ODOO_DB=${ODOO_DB}
-      - ODOO_USERNAME=${ODOO_USERNAME}
-      - ODOO_PASSWORD=${ODOO_PASSWORD}
+      - ODOO_API_KEY=${ODOO_API_KEY}
       - WEBHOOK_URL=${WEBHOOK_URL}
     env_file:
       - .env

@@ -1,53 +1,14 @@
 #!/usr/bin/env python3
-import os
 import json
-import requests
-import time
+import logging
+import sys
 from dotenv import load_dotenv
 from datetime import datetime
 
+from dhl_client import DHLConfigError, DHLTracker
+
 # Load environment variables
 load_dotenv()
-
-class DHLTracker:
-    def __init__(self):
-        self.api_key = os.getenv('DHL_API_KEY')
-        self.base_url = "https://api-eu.dhl.com/track/shipments"
-    
-    def track_shipment(self, tracking_number, service=None):
-        """
-        Tracks a DHL shipment using the DHL Tracking API.
-        
-        Args:
-            tracking_number: The DHL tracking number
-            service: Optional DHL service to use (e.g., express, parcel-de)
-            
-        Returns:
-            Dictionary containing the tracking information
-        """
-        headers = {
-            "DHL-API-Key": self.api_key,
-            "Accept": "application/json"
-        }
-        
-        params = {
-            "trackingNumber": tracking_number,
-        }
-        
-        if service:
-            params["service"] = service
-        
-        response = requests.get(self.base_url, headers=headers, params=params)
-        time.sleep(5)  # Rate limiting: wait 5 seconds between requests (DHL API limit)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {
-                "error": True,
-                "status_code": response.status_code,
-                "message": response.text
-            }
 
 def extract_detailed_status(tracking_data):
     """
@@ -140,8 +101,13 @@ def extract_detailed_status(tracking_data):
     return result
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    
     # Initialize tracker
-    dhl_tracker = DHLTracker()
+    try:
+        dhl_tracker = DHLTracker()
+    except DHLConfigError as e:
+        sys.exit(f"Invalid configuration: {e}")
     
     # Get tracking number from user
     tracking_number = input("Enter DHL tracking number: ")
